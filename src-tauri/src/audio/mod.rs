@@ -184,9 +184,10 @@ pub fn start(
 
                 for (speaker, pcm) in [("Remote", &mut sys), ("You", &mut mic)] {
                     let rms = dsp::rms(pcm);
-                    let is_speech = !pcm.is_empty() && dsp::is_speech(pcm);
+                    // Force speech to true temporarily for testing to verify Whisper execution
+                    let is_speech = true;
                     if speaker == "Remote" {
-                        eprintln!("[Loopback VAD] RMS: {}, Is Speech: {}", rms, is_speech);
+                        eprintln!("[Loopback VAD] RMS: {}, Is Speech: {} (forced true for testing)", rms, is_speech);
                     }
                     if is_speech {
                         let duration_secs = pcm.len() as f64 / 16_000.0;

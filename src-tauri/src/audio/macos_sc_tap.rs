@@ -90,6 +90,7 @@ impl UnsafeSCStreamOutput for AudioOutputHandler {
 
             let mono_rms = dsp::rms(&mono_samples);
             eprintln!("[SCKit Tap] Packet arrived: len = {}, mono_rms = {:.5}", mono_samples.len(), mono_rms);
+            eprintln!("[SCKit Tap Raw] first 4 floats: {:?}", &mono_samples[..4.min(mono_samples.len())]);
 
             // Non-blocking handoff from real-time CoreMedia thread to avoid priority inversion
             if let Err(e) = self.tx.try_send(mono_samples) {
@@ -137,7 +138,7 @@ impl ScreenCaptureAudioTap {
             height: 100,
             captures_audio: true,
             sample_rate: 48_000,
-            channel_count: 1,
+            channel_count: 2,
             excludes_current_process_audio: true,
             ..Default::default()
         };
