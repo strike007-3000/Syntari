@@ -139,7 +139,27 @@ impl FoundryEngine {
 
         eprintln!("[Whisper] Submitting {} bytes to whisper-tiny", wav_bytes.len());
 
-        let item = Item::audio_data(wav_bytes.to_vec(), Some("audio/wav"), 16_000, 1);
+        // Zero-forensic RAII ephemeral file handler:
+        // Foundry Local SDK requires a file URI on macOS/Darwin runtime.
+        struct EphemeralAudioFile(PathBuf, usize);
+        impl Drop for EphemeralAudioFile {
+            fn drop(&mut self) {
+                if self.0.exists() {
+                    // Forensically overwrite with zero bytes before unlinking
+                    let zeros = vec![0u8; self.1];
+                    let _ = std::fs::write(&self.0, zeros);
+                    let _ = std::fs::remove_file(&self.0);
+                }
+            }
+        }
+
+        let temp_path = std::env::temp_dir().join(format!("syntari_ephemeral_{}_{}.wav", fastrand::u64(..), fastrand::u32(..)));
+        std::fs::write(&temp_path, wav_bytes)
+            .map_err(|e| format!("Failed to stage ephemeral audio: {e}"))?;
+        let _guard = EphemeralAudioFile(temp_path.clone(), wav_bytes.len());
+
+        let path_str = temp_path.to_string_lossy().to_string();
+        let item = Item::audio_uri(&path_str, Some("audio/wav"), 16_000, 1);
         let text = session
             .transcribe(item)
             .await
