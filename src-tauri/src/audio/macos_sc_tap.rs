@@ -31,27 +31,55 @@ impl UnsafeSCStreamOutput for AudioOutputHandler {
     fn did_output_sample_buffer(&self, sample_buffer_ref: Id<CMSampleBufferRef>, of_type: u8) {
         // of_type 1 is Audio (0 is Screen)
         if of_type == 1 {
+            if let Some(desc) = sample_buffer_ref.get_format_description() {
+                static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                if !ONCE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    let asbd = unsafe { screencapturekit_sys::cm_format_description_ref::CMAudioFormatDescriptionGetStreamBasicDescription(&*desc) };
+                    if !asbd.is_null() {
+                        let fmt = unsafe { *asbd };
+                        eprintln!("[SCKit Format] rate: {}, format_id: {}, flags: 0x{:X}, bits: {}, ch: {}, bytes_per_frame: {}",
+                            fmt.sample_rate, fmt.format_id, fmt.format_flags, fmt.bits_per_channel, fmt.channels_per_frame, fmt.bytes_per_frame);
+                    }
+                }
+            }
+
             let audio_buffers = sample_buffer_ref.get_av_audio_buffer_list();
             if audio_buffers.is_empty() {
                 return;
             }
 
-            // Extract f32 PCM samples from the first available audio buffer
-            let buffer = &audio_buffers[0];
-            let num_bytes = buffer.data.len();
-            let float_count = num_bytes / 4;
-            if float_count == 0 {
-                return;
-            }
+            // Extract PCM samples from audio buffers
+            // Note: If non-interleaved stereo, audio_buffers has 2 buffers (one per channel).
+            let (raw_samples, num_channels) = if audio_buffers.len() >= 2 {
+                let left_len = audio_buffers[0].data.len() / 4;
+                let right_len = audio_buffers[1].data.len() / 4;
+                let count = left_len.min(right_len);
+                let mut mono = Vec::with_capacity(count);
+                for i in 0..count {
+                    let l_bytes: [u8; 4] = audio_buffers[0].data[i * 4..(i + 1) * 4].try_into().unwrap();
+                    let r_bytes: [u8; 4] = audio_buffers[1].data[i * 4..(i + 1) * 4].try_into().unwrap();
+                    let l = f32::from_ne_bytes(l_bytes);
+                    let r = f32::from_ne_bytes(r_bytes);
+                    mono.push((l + r) * 0.5);
+                }
+                (mono, 1)
+            } else {
+                let buffer = &audio_buffers[0];
+                let num_bytes = buffer.data.len();
+                let float_count = num_bytes / 4;
+                if float_count == 0 {
+                    return;
+                }
+                let mut samples = Vec::with_capacity(float_count);
+                for chunk in buffer.data.chunks_exact(4) {
+                    let sample = f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                    samples.push(sample);
+                }
+                let ch = buffer.number_channels;
+                (samples, ch)
+            };
 
-            let mut raw_samples = Vec::with_capacity(float_count);
-            for chunk in buffer.data.chunks_exact(4) {
-                let sample = f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-                raw_samples.push(sample);
-            }
-
-            // Downmix stereo to mono if needed (SCKit delivers 2-channel stereo for system audio)
-            let mono_samples: Vec<f32> = if buffer.number_channels == 2 || raw_samples.len() % 2 == 0 {
+            let mono_samples: Vec<f32> = if num_channels == 2 || (num_channels != 1 && raw_samples.len() % 2 == 0) {
                 raw_samples
                     .chunks_exact(2)
                     .map(|pair| (pair[0] + pair[1]) * 0.5)
