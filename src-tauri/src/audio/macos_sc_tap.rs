@@ -50,10 +50,8 @@ impl UnsafeSCStreamOutput for AudioOutputHandler {
                 raw_samples.push(sample);
             }
 
-            eprintln!("[SCKit Tap] Packet arrived: len = {}", raw_samples.len());
-
             // Downmix stereo to mono if needed (SCKit delivers 2-channel stereo for system audio)
-            let mono_samples = if buffer.number_channels == 2 || raw_samples.len() % 2 == 0 {
+            let mono_samples: Vec<f32> = if buffer.number_channels == 2 || raw_samples.len() % 2 == 0 {
                 raw_samples
                     .chunks_exact(2)
                     .map(|pair| (pair[0] + pair[1]) * 0.5)
@@ -62,8 +60,13 @@ impl UnsafeSCStreamOutput for AudioOutputHandler {
                 raw_samples
             };
 
+            let mono_rms = dsp::rms(&mono_samples);
+            eprintln!("[SCKit Tap] Packet arrived: len = {}, mono_rms = {:.5}", mono_samples.len(), mono_rms);
+
             // Non-blocking handoff from real-time CoreMedia thread to avoid priority inversion
-            let _ = self.tx.try_send(mono_samples);
+            if let Err(e) = self.tx.try_send(mono_samples) {
+                eprintln!("[SCKit Tap] Channel send warning: {e}");
+            }
         }
     }
 }
@@ -111,7 +114,7 @@ impl ScreenCaptureAudioTap {
             ..Default::default()
         };
 
-        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(64);
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(256);
         let cap_clone = Arc::clone(&cap);
         std::thread::Builder::new()
             .name("sc-audio-resampler".into())
@@ -127,8 +130,12 @@ impl ScreenCaptureAudioTap {
 
                         let mut b = cap_clone.sys.lock().unwrap();
                         b.extend(out.iter().copied());
-                        let over = b.len().saturating_sub(MAX_BUF);
+                        let cur_len = b.len();
+                        let over = cur_len.saturating_sub(MAX_BUF);
                         b.drain(..over);
+                        if cur_len % 16_000 < out.len() {
+                            eprintln!("[SCKit Tap] Loopback ring buffer accumulated {} samples (rms: {:.5})", cur_len, rms_lvl);
+                        }
                     }
                 }
             })

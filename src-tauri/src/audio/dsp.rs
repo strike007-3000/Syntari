@@ -35,7 +35,7 @@ impl Resampler {
 /// Energy VAD gate: true if the window contains speech-level energy.
 pub fn is_speech(pcm: &[f32]) -> bool {
     const FRAME: usize = 320; // 20 ms @ 16 kHz
-    let active = pcm.chunks(FRAME).filter(|f| rms(f) > 0.01).count();
+    let active = pcm.chunks(FRAME).filter(|f| rms(f) > 0.003).count();
     active * 10 >= pcm.len() / FRAME.max(1) // >=10% active frames
 }
 
