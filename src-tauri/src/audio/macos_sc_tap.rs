@@ -116,6 +116,12 @@ impl ScreenCaptureAudioTap {
         let content = SCShareableContent::try_current()
             .map_err(|e| format!("Failed to get ScreenCapture content: {e}"))?;
 
+        eprintln!("[SCKit Tap] Displays: {}, Apps: {}", content.displays.len(), content.applications.len());
+        for d in &content.displays {
+            eprintln!("[SCKit Tap] Display id: {}, size: {}x{}", d.display_id, d.width, d.height);
+        }
+
+        // On macOS, main display typically has display_id from CGMainDisplayID or first non-zero display
         let display = content
             .displays
             .first()
@@ -128,6 +134,9 @@ impl ScreenCaptureAudioTap {
             .into_iter()
             .filter(|app| app.process_id == current_pid)
             .collect();
+
+        eprintln!("[SCKit Tap] Target display_id: {}, Excluding {} self instances (PID: {})",
+            display.display_id, apps_to_exclude.len(), current_pid);
 
         let filter = SCContentFilter::new(InitParams::DisplayExcludingApplicationsExceptingWindows(
             display,
