@@ -137,6 +137,8 @@ impl FoundryEngine {
     ) -> Result<Vec<TranscriptChunk>, String> {
         let session = self.audio_session.as_ref().ok_or("Audio session not initialized")?;
 
+        eprintln!("[Whisper] Submitting {} bytes to whisper-tiny", wav_bytes.len());
+
         let item = Item::audio_data(wav_bytes.to_vec(), Some("audio/wav"), 16_000, 1);
         let text = session
             .transcribe(item)

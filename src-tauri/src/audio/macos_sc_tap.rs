@@ -44,14 +44,26 @@ impl UnsafeSCStreamOutput for AudioOutputHandler {
                 return;
             }
 
-            let mut f32_samples = Vec::with_capacity(float_count);
+            let mut raw_samples = Vec::with_capacity(float_count);
             for chunk in buffer.data.chunks_exact(4) {
                 let sample = f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-                f32_samples.push(sample);
+                raw_samples.push(sample);
             }
 
+            eprintln!("[SCKit Tap] Packet arrived: len = {}", raw_samples.len());
+
+            // Downmix stereo to mono if needed (SCKit delivers 2-channel stereo for system audio)
+            let mono_samples = if buffer.number_channels == 2 || raw_samples.len() % 2 == 0 {
+                raw_samples
+                    .chunks_exact(2)
+                    .map(|pair| (pair[0] + pair[1]) * 0.5)
+                    .collect()
+            } else {
+                raw_samples
+            };
+
             // Non-blocking handoff from real-time CoreMedia thread to avoid priority inversion
-            let _ = self.tx.try_send(f32_samples);
+            let _ = self.tx.try_send(mono_samples);
         }
     }
 }

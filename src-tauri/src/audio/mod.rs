@@ -170,7 +170,8 @@ pub fn start(
 
         loop {
             let stopping = stop2.load(Ordering::Relaxed);
-            if stopping || last.elapsed() >= Duration::from_secs(WINDOW_SECS) {
+            let has_window_samples = cap.sys.lock().unwrap().len() >= 80_000 || cap.mic.lock().unwrap().len() >= 80_000;
+            if stopping || has_window_samples || last.elapsed() >= Duration::from_secs(WINDOW_SECS) {
                 last = Instant::now();
                 let now_ms = t0.elapsed().as_millis() as u64;
                 let mut mic: Vec<f32> = cap.mic.lock().unwrap().drain(..).collect();
@@ -182,7 +183,12 @@ pub fn start(
                 }
 
                 for (speaker, pcm) in [("Remote", &mut sys), ("You", &mut mic)] {
-                    if !pcm.is_empty() && dsp::is_speech(pcm) {
+                    let rms = dsp::rms(pcm);
+                    let is_speech = !pcm.is_empty() && dsp::is_speech(pcm);
+                    if speaker == "Remote" {
+                        eprintln!("[Loopback VAD] RMS: {}, Is Speech: {}", rms, is_speech);
+                    }
+                    if is_speech {
                         let duration_secs = pcm.len() as f64 / 16_000.0;
                         let end_secs = ai::ms_to_secs(now_ms);
                         let start_secs = (end_secs - duration_secs).max(0.0);
