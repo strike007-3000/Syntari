@@ -12,7 +12,7 @@ use std::sync::Arc;
 struct ErrorHandler;
 impl StreamErrorHandler for ErrorHandler {
     fn on_error(&self) {
-        eprintln!("[Syntari SCKit] Audio stream encountered an error");
+        eprintln!("[Syntari SCKit Error] Stream delegate reported stream didStopWithError!");
     }
 }
 
@@ -150,7 +150,13 @@ impl ScreenCaptureAudioTap {
             captures_audio: true,
             sample_rate: 48_000,
             channel_count: 2,
-            excludes_current_process_audio: true,
+            excludes_current_process_audio: false,
+            minimum_frame_interval: screencapturekit::sc_types::base::CMTime {
+                value: 1,
+                timescale: 10,
+                flags: screencapturekit::sc_types::base::CMTIME_FLAGS_VALID,
+                epoch: 0,
+            },
             ..Default::default()
         };
 
