@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Syntari requires microphone access to transcribe your spoken meeting notes 100% locally.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Syntari requires Screen &amp; System Audio Recording access to capture remote meeting participants audio directly without virtual cables.</string>
+</dict>
+</plist>

@@ -1,0 +1,16 @@
+# Node
+node_modules/
+dist/
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+*.db
+*.sqlite
+*.sqlite3
+
+# AI models & local weights (managed by Foundry Local SDK / offline installer)
+src-tauri/resources/models/
+
+# macOS
+.DS_Store

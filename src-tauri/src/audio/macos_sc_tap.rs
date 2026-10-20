@@ -1,0 +1,148 @@
+use crate::audio::{dsp, Capture, MAX_BUF};
+use screencapturekit::{
+    sc_content_filter::{InitParams, SCContentFilter},
+    sc_error_handler::StreamErrorHandler,
+    sc_shareable_content::SCShareableContent,
+    sc_stream::SCStream,
+    sc_stream_configuration::SCStreamConfiguration,
+};
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+
+struct ErrorHandler;
+impl StreamErrorHandler for ErrorHandler {
+    fn on_error(&self) {
+        eprintln!("[Syntari SCKit] Audio stream encountered an error");
+    }
+}
+
+use screencapturekit_sys::{
+    cm_sample_buffer_ref::CMSampleBufferRef,
+    os_types::rc::Id,
+    stream::UnsafeSCStream,
+    stream_output_handler::UnsafeSCStreamOutput,
+};
+
+struct AudioOutputHandler {
+    tx: std::sync::mpsc::SyncSender<Vec<f32>>,
+}
+
+impl UnsafeSCStreamOutput for AudioOutputHandler {
+    fn did_output_sample_buffer(&self, sample_buffer_ref: Id<CMSampleBufferRef>, of_type: u8) {
+        // of_type 1 is Audio (0 is Screen)
+        if of_type == 1 {
+            let audio_buffers = sample_buffer_ref.get_av_audio_buffer_list();
+            if audio_buffers.is_empty() {
+                return;
+            }
+
+            // Extract f32 PCM samples from the first available audio buffer
+            let buffer = &audio_buffers[0];
+            let num_bytes = buffer.data.len();
+            let float_count = num_bytes / 4;
+            if float_count == 0 {
+                return;
+            }
+
+            let mut f32_samples = Vec::with_capacity(float_count);
+            for chunk in buffer.data.chunks_exact(4) {
+                let sample = f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                f32_samples.push(sample);
+            }
+
+            // Non-blocking handoff from real-time CoreMedia thread to avoid priority inversion
+            let _ = self.tx.try_send(f32_samples);
+        }
+    }
+}
+
+#[repr(transparent)]
+struct SCStreamInternal {
+    unsafe_ref: Id<UnsafeSCStream>,
+}
+
+pub struct ScreenCaptureAudioTap {
+    stream: Id<UnsafeSCStream>,
+}
+
+impl ScreenCaptureAudioTap {
+    pub fn start(cap: Arc<Capture>) -> Result<Self, String> {
+        let content = SCShareableContent::try_current()
+            .map_err(|e| format!("Failed to get ScreenCapture content: {e}"))?;
+
+        let display = content
+            .displays
+            .first()
+            .ok_or_else(|| "No display found for ScreenCaptureKit".to_string())?
+            .clone();
+
+        let current_pid = std::process::id() as i32;
+        let apps_to_exclude: Vec<_> = content
+            .applications
+            .into_iter()
+            .filter(|app| app.process_id == current_pid)
+            .collect();
+
+        let filter = SCContentFilter::new(InitParams::DisplayExcludingApplicationsExceptingWindows(
+            display,
+            apps_to_exclude,
+            vec![],
+        ));
+
+        let config = SCStreamConfiguration {
+            width: 100,
+            height: 100,
+            captures_audio: true,
+            sample_rate: 48_000,
+            channel_count: 1,
+            excludes_current_process_audio: true,
+            ..Default::default()
+        };
+
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(64);
+        let cap_clone = Arc::clone(&cap);
+        std::thread::Builder::new()
+            .name("sc-audio-resampler".into())
+            .spawn(move || {
+                let mut resampler = dsp::Resampler::new(48_000.0);
+                let mut out = Vec::new();
+                while let Ok(samples) = rx.recv() {
+                    out.clear();
+                    resampler.push(samples.into_iter(), &mut out);
+                    if !out.is_empty() {
+                        let rms_lvl = dsp::rms(&out);
+                        cap_clone.sys_lvl.store(rms_lvl.to_bits(), Ordering::Relaxed);
+
+                        let mut b = cap_clone.sys.lock().unwrap();
+                        b.extend(out.iter().copied());
+                        let over = b.len().saturating_sub(MAX_BUF);
+                        b.drain(..over);
+                    }
+                }
+            })
+            .map_err(|e| format!("Failed to spawn sc audio thread: {e}"))?;
+
+        let sc_stream = SCStream::new(filter, config, ErrorHandler);
+        // Transmute safe wrapper to extract the underlying Id<UnsafeSCStream>
+        let internal: SCStreamInternal = unsafe { std::mem::transmute(sc_stream) };
+        let stream = internal.unsafe_ref;
+
+        let handler = AudioOutputHandler { tx };
+        // Bypass screencapturekit 0.2's StreamOutputWrapper which panics on audio buffers
+        // calling sys_ref.get_frame_info().status() on nil attachments.
+        stream.add_stream_output(handler, 1); // 1 = Audio
+
+        stream
+            .start_capture()
+            .map_err(|e| format!("Failed to start ScreenCaptureKit audio capture: {e:?}"))?;
+
+        eprintln!("[Syntari SCKit] Native ScreenCaptureKit audio tap active.");
+        Ok(Self { stream })
+    }
+
+    pub fn stop(&mut self) -> Result<(), String> {
+        self.stream
+            .stop_capture()
+            .map_err(|e| format!("Failed to stop ScreenCaptureKit capture: {e:?}"))
+    }
+}
