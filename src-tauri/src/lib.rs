@@ -1,7 +1,24 @@
 mod ai;
 mod audio;
 
-use ai::engine::{EnhancedResult, FoundryEngine};
+/// Retrieves the database encryption key from the OS keychain, creating one if absent.
+fn get_or_create_db_key() -> Result<String, String> {
+    let entry = keyring::Entry::new("syntari", "db-encryption-key")
+        .map_err(|e| format!("keychain entry error: {e}"))?;
+    match entry.get_password() {
+        Ok(key) => Ok(key),
+        Err(_) => {
+            // Generate a new 32-byte cryptographically secure random key as hex
+            let mut bytes = [0u8; 32];
+            getrandom::getrandom(&mut bytes).map_err(|e| format!("getrandom error: {e}"))?;
+            let key: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+            entry.set_password(&key).map_err(|e| format!("keychain write error: {e}"))?;
+            Ok(key)
+        }
+    }
+}
+
+use ai::engine::{EnhancedResult, FoundryEngine, InsightItem};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -122,7 +139,38 @@ async fn expand_note(
     Ok(result)
 }
 
+#[tauri::command]
+async fn extract_insights(app: AppHandle, since_ms: u64) -> Result<Vec<InsightItem>, String> {
+    let st = app.state::<AppState>();
+    let chunks: Vec<_> = st
+        .tr
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|c| (c.start * 1000.0) as u64 >= since_ms)
+        .cloned()
+        .collect();
+    let engine = st.ai_engine.lock().await;
+    engine.extract_insights(&chunks).await
+}
+
+#[tauri::command]
+fn get_db_key() -> Result<String, String> {
+    get_or_create_db_key()
+}
+
 pub fn run() {
+    let db_key = get_or_create_db_key().unwrap_or_else(|e| {
+        eprintln!("[Syntari] Keychain error, falling back to unencrypted DB: {e}");
+        String::new()
+    });
+
+    let db_url = if db_key.is_empty() {
+        "sqlite:syntari.db".to_string()
+    } else {
+        format!("sqlite:syntari.db?key={db_key}")
+    };
+
     let migrations = vec![Migration {
         version: 1,
         description: "init",
@@ -131,7 +179,7 @@ pub fn run() {
     }];
 
     tauri::Builder::default()
-        .plugin(Sql::default().add_migrations("sqlite:syntari.db", migrations).build())
+        .plugin(Sql::default().add_migrations(&db_url, migrations).build())
         .setup(|app| {
             let resource_path = app
                 .path()
@@ -166,7 +214,9 @@ pub fn run() {
             get_audio_levels,
             check_permissions,
             open_system_settings,
-            expand_note
+            expand_note,
+            extract_insights,
+            get_db_key
         ])
         .run(tauri::generate_context!())
         .expect("error while running Syntari application");

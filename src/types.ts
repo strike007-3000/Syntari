@@ -1,6 +1,6 @@
 export type NoteKind = "decision" | "action" | "risk" | "discussion";
 export type Speaker = "You" | "Remote";
-export type NoteStatus = "pending" | "completed" | "failed";
+export type NoteStatus = "pending" | "completed" | "failed" | "suggested";
 
 export interface TranscriptChunk {
   id: number;

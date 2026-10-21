@@ -5,6 +5,13 @@ import { Note, NoteExpandedPayload, TranscriptChunk, AudioLevels, parseShorthand
 
 export type View = "architect" | "markdown";
 
+interface InsightItem {
+  kind: string;
+  text: string;
+  owner?: string;
+  due?: string;
+}
+
 interface State {
   running: boolean;
   sessionId: number | null;
@@ -26,10 +33,26 @@ interface State {
   pushChunk: (c: TranscriptChunk) => void;
   setLevels: (l: AudioLevels) => void;
   inspect: (chunkId: number | null) => void;
+  pushAutoNote: (item: InsightItem, tsMs: number) => void;
+  acceptSuggestion: (id: string) => void;
+  dismissSuggestion: (id: string) => void;
 }
 
 let db: Promise<Database> | null = null;
-const getDb = () => (db ??= Database.load("sqlite:syntari.db"));
+let insightInterval: ReturnType<typeof setInterval> | null = null;
+// Tracks session-relative ms of last extracted insight to avoid re-processing.
+let lastInsightMs = 0;
+// Dedup set so repeated extractions don't push duplicate notes.
+const seenInsightTexts = new Set<string>();
+const getDb = () => {
+  if (!db) {
+    db = invoke<string>("get_db_key").then((key) => {
+      const url = key ? `sqlite:syntari.db?key=${key}` : "sqlite:syntari.db";
+      return Database.load(url);
+    });
+  }
+  return db;
+};
 const persist = (fn: (d: Database) => Promise<unknown>) => getDb().then(fn).catch((e) => console.error("db", e));
 
 export const useStore = create<State>((set, get) => ({
@@ -54,6 +77,8 @@ export const useStore = create<State>((set, get) => ({
   async start() {
     await invoke("start_syntari_session");
     const startedAt = Date.now();
+    lastInsightMs = 0;
+    seenInsightTexts.clear();
     set({
       running: true,
       startedAt,
@@ -66,9 +91,25 @@ export const useStore = create<State>((set, get) => ({
       const r = await d.execute("INSERT INTO sessions (started_at) VALUES (?)", [startedAt]);
       set({ sessionId: r.lastInsertId ?? null });
     });
+    // Poll for insights every 30s
+    insightInterval = setInterval(async () => {
+      const { running, startedAt: t0 } = get();
+      if (!running) return;
+      const nowMs = Date.now() - t0;
+      try {
+        const items = await invoke<InsightItem[]>("extract_insights", { sinceMs: lastInsightMs });
+        lastInsightMs = Math.max(0, nowMs - 5000); // leave 5s overlap for in-flight chunks
+        for (const item of items) {
+          get().pushAutoNote(item, nowMs);
+        }
+      } catch (e) {
+        console.error("extract_insights failed:", e);
+      }
+    }, 30_000);
   },
 
   async stop() {
+    if (insightInterval) { clearInterval(insightInterval); insightInterval = null; }
     await invoke("stop_syntari_session");
     const { sessionId } = get();
     set({ running: false });
@@ -182,6 +223,40 @@ export const useStore = create<State>((set, get) => ({
         [sessionId, c.id, c.speaker, c.text, c.ts],
       ),
     );
+  },
+
+  pushAutoNote(item, tsMs) {
+    const key = `${item.kind}:${item.text.toLowerCase().trim()}`;
+    if (seenInsightTexts.has(key)) return;
+    seenInsightTexts.add(key);
+    const { sessionId } = get();
+    const note: Note = {
+      id: crypto.randomUUID(),
+      kind: item.kind as Note["kind"],
+      raw: item.text,
+      ts: tsMs,
+      status: "suggested",
+      owner: item.owner,
+      due: item.due,
+    };
+    set((s) => ({ notes: [...s.notes, note] }));
+  },
+
+  acceptSuggestion(id) {
+    const note = get().notes.find((n) => n.id === id);
+    if (!note) return;
+    set((s) => ({ notes: s.notes.map((n) => n.id === id ? { ...n, status: "completed", expanded: n.raw } : n) }));
+    const { sessionId } = get();
+    persist((d) =>
+      d.execute(
+        "INSERT INTO notes (id, session_id, kind, raw, ts_ms, owner, due, expanded) VALUES (?,?,?,?,?,?,?,?)",
+        [note.id, sessionId, note.kind, note.raw, note.ts, note.owner ?? null, note.due ?? null, note.raw],
+      ),
+    );
+  },
+
+  dismissSuggestion(id) {
+    set((s) => ({ notes: s.notes.filter((n) => n.id !== id) }));
   },
 
   setLevels: (levels) => set({ levels }),

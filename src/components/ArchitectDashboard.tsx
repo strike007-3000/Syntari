@@ -11,8 +11,20 @@ const SECTIONS: { kind: NoteKind; title: string }[] = [
 ];
 
 function Item({ n }: { n: Note }) {
-  const { toggleDone, inspect } = useStore();
+  const { toggleDone, inspect, acceptSuggestion, dismissSuggestion } = useStore();
   const body = n.expanded ?? n.raw;
+
+  if (n.status === "suggested") {
+    return (
+      <li className="flex gap-2 rounded border border-amber-500/30 bg-amber-950/20 p-2">
+        <span className="flex-1 text-sm opacity-80">{body}</span>
+        <span className="text-xs text-amber-400/60 self-center mr-1">AI suggestion</span>
+        <button onClick={() => acceptSuggestion(n.id)} className="rounded px-2 py-0.5 text-xs bg-accent/20 text-accent hover:bg-accent/40">Accept</button>
+        <button onClick={() => dismissSuggestion(n.id)} className="rounded px-2 py-0.5 text-xs text-slate-400 hover:text-slate-200">Dismiss</button>
+      </li>
+    );
+  }
+
   return (
     <li className="group relative flex gap-2 rounded p-2 hover:bg-ink-800">
       {n.kind === "action" && (
@@ -33,7 +45,7 @@ function Item({ n }: { n: Note }) {
       </button>
       {n.citation?.quote && (
         <div className="pointer-events-none absolute left-6 top-full z-10 hidden w-96 rounded border border-ink-700 bg-ink-950 p-2 text-xs italic shadow-lg group-hover:block">
-          “{n.citation.quote}”
+          "{n.citation.quote}"
         </div>
       )}
     </li>
@@ -42,7 +54,7 @@ function Item({ n }: { n: Note }) {
 
 export const toMarkdown = (notes: Note[]) =>
   SECTIONS.map(({ kind, title }) => {
-    const items = notes.filter((n) => n.kind === kind);
+    const items = notes.filter((n) => n.kind === kind && n.status !== "suggested");
     if (!items.length) return "";
     const lines = items.map((n) =>
       kind === "action"
