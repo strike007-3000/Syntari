@@ -89,10 +89,9 @@ impl UnsafeSCStreamOutput for AudioOutputHandler {
             };
 
             let mono_rms = dsp::rms(&mono_samples);
-            let non_zero_count = mono_samples.iter().filter(|&&s| s != 0.0).count();
-            eprintln!("[SCKit Tap] num_buffers: {}, bytes: {}, len: {}, non_zero: {}, mono_rms: {:.5}",
-                audio_buffers.len(), audio_buffers[0].data.len(), mono_samples.len(), non_zero_count, mono_rms);
-            eprintln!("[SCKit Tap Raw] first 4 floats: {:?}", &mono_samples[..4.min(mono_samples.len())]);
+            if mono_rms > 0.0001 {
+                eprintln!("[SCKit Tap] len: {}, mono_rms: {:.5}", mono_samples.len(), mono_rms);
+            }
 
             // Non-blocking handoff from real-time CoreMedia thread to avoid priority inversion
             if let Err(e) = self.tx.try_send(mono_samples) {
@@ -116,33 +115,19 @@ impl ScreenCaptureAudioTap {
         let content = SCShareableContent::try_current()
             .map_err(|e| format!("Failed to get ScreenCapture content: {e}"))?;
 
-        eprintln!("[SCKit Tap] Displays: {}, Apps: {}", content.displays.len(), content.applications.len());
-        for d in &content.displays {
-            eprintln!("[SCKit Tap] Display id: {}, size: {}x{}", d.display_id, d.width, d.height);
-        }
-
-        // On macOS, main display typically has display_id from CGMainDisplayID or first non-zero display
         let display = content
             .displays
             .first()
             .ok_or_else(|| "No display found for ScreenCaptureKit".to_string())?
             .clone();
 
-        let current_pid = std::process::id() as i32;
-        let apps_to_exclude: Vec<_> = content
-            .applications
-            .into_iter()
-            .filter(|app| app.process_id == current_pid)
-            .collect();
+        eprintln!("[SCKit Tap] Target display_id: {}, size: {}x{}", display.display_id, display.width, display.height);
 
-        eprintln!("[SCKit Tap] Target display_id: {}, Excluding {} self instances (PID: {})",
-            display.display_id, apps_to_exclude.len(), current_pid);
-
-        let filter = SCContentFilter::new(InitParams::DisplayExcludingApplicationsExceptingWindows(
-            display,
-            apps_to_exclude,
-            vec![],
-        ));
+        // Use the simplest Display filter — captures all system audio.
+        // excludes_current_process_audio: false in config handles self-exclusion.
+        // More complex filters (ExcludingApplications) can cause SCKit to deliver
+        // zero-filled audio buffers instead of refusing the stream outright.
+        let filter = SCContentFilter::new(InitParams::Display(display));
 
         let config = SCStreamConfiguration {
             width: 100,
@@ -179,8 +164,8 @@ impl ScreenCaptureAudioTap {
                         let cur_len = b.len();
                         let over = cur_len.saturating_sub(MAX_BUF);
                         b.drain(..over);
-                        if cur_len % 16_000 < out.len() {
-                            eprintln!("[SCKit Tap] Loopback ring buffer accumulated {} samples (rms: {:.5})", cur_len, rms_lvl);
+                        if rms_lvl > 0.001 && cur_len % 16_000 < out.len() {
+                            eprintln!("[SCKit Tap] buf: {} samples, rms: {:.5}", cur_len, rms_lvl);
                         }
                     }
                 }

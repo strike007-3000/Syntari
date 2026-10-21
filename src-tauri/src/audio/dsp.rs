@@ -39,6 +39,25 @@ pub fn is_speech(pcm: &[f32]) -> bool {
     active * 10 >= pcm.len() / FRAME.max(1) // >=10% active frames
 }
 
+/// Returns the sample index of the start of the first silence gap >= `min_silence_ms`.
+/// Use this to find natural sentence boundaries in accumulated audio.
+pub fn find_silence_gap(pcm: &[f32], min_silence_ms: u32) -> Option<usize> {
+    const FRAME: usize = 320; // 20 ms @ 16 kHz
+    let min_frames = (min_silence_ms / 20).max(1) as usize;
+    let mut run = 0usize;
+    for (i, chunk) in pcm.chunks(FRAME).enumerate() {
+        if rms(chunk) < 0.003 {
+            run += 1;
+            if run >= min_frames {
+                return Some((i + 1 - run) * FRAME);
+            }
+        } else {
+            run = 0;
+        }
+    }
+    None
+}
+
 /// NLMS adaptive echo canceller: subtracts the filtered loopback reference
 /// from the mic signal. Covers ~128 ms of echo path (2048 taps @ 16 kHz).
 pub struct Aec {

@@ -19,6 +19,8 @@ use tauri::{AppHandle, Emitter};
 
 const WINDOW_SECS: u64 = 5;
 const MAX_BUF: usize = 16_000 * 30; // circular cap: 30 s per track, RAM only
+// Samples kept in the ring buffer after each window drain to give Whisper sentence context.
+const OVERLAP_SAMPLES: usize = 8_000; // 0.5 s @ 16 kHz
 
 #[derive(Default)]
 pub struct Capture {
@@ -168,29 +170,71 @@ pub fn start(
             .build()
             .unwrap();
 
+        // Minimum samples before we'll slice on a silence gap (0.5 s @ 16 kHz).
+        const MIN_SEGMENT: usize = 8_000;
+
         loop {
             let stopping = stop2.load(Ordering::Relaxed);
             let has_window_samples = cap.sys.lock().unwrap().len() >= 80_000 || cap.mic.lock().unwrap().len() >= 80_000;
-            if stopping || has_window_samples || last.elapsed() >= Duration::from_secs(WINDOW_SECS) {
+            // Fire early when a natural pause is found in the accumulated system audio.
+            let has_silence_gap = {
+                let b = cap.sys.lock().unwrap();
+                b.len() > MIN_SEGMENT && {
+                    let s: Vec<f32> = b.iter().copied().collect();
+                    dsp::find_silence_gap(&s, 400).map_or(false, |p| p >= MIN_SEGMENT)
+                }
+            };
+            if stopping || has_window_samples || has_silence_gap || last.elapsed() >= Duration::from_secs(WINDOW_SECS) {
                 last = Instant::now();
                 let now_ms = t0.elapsed().as_millis() as u64;
-                let mut mic: Vec<f32> = cap.mic.lock().unwrap().drain(..).collect();
-                let mut sys: Vec<f32> = cap.sys.lock().unwrap().drain(..).collect();
+
+                // Drain to the silence gap when one exists, otherwise drain all-but-OVERLAP.
+                let (mut sys, sys_new) = {
+                    let mut b = cap.sys.lock().unwrap();
+                    let total = b.len();
+                    let drain_to = if total > MIN_SEGMENT {
+                        let all: Vec<f32> = b.iter().copied().collect();
+                        dsp::find_silence_gap(&all, 400)
+                            .filter(|&p| p >= MIN_SEGMENT)
+                            .unwrap_or_else(|| total.saturating_sub(OVERLAP_SAMPLES))
+                    } else {
+                        total.saturating_sub(OVERLAP_SAMPLES)
+                    };
+                    let drained: Vec<f32> = b.drain(..drain_to).collect();
+                    (drained, drain_to)
+                };
+                let (mut mic, mic_new) = {
+                    let mut b = cap.mic.lock().unwrap();
+                    let total = b.len();
+                    let drain_to = if total > MIN_SEGMENT {
+                        let all: Vec<f32> = b.iter().copied().collect();
+                        dsp::find_silence_gap(&all, 400)
+                            .filter(|&p| p >= MIN_SEGMENT)
+                            .unwrap_or_else(|| total.saturating_sub(OVERLAP_SAMPLES))
+                    } else {
+                        total.saturating_sub(OVERLAP_SAMPLES)
+                    };
+                    let drained: Vec<f32> = b.drain(..drain_to).collect();
+                    (drained, drain_to)
+                };
 
                 if !sys.is_empty() {
                     dsp::apply_ducking(&mut mic, &sys);
                     aec.process(&mut mic, &sys);
                 }
 
-                for (speaker, pcm) in [("Remote", &mut sys), ("You", &mut mic)] {
+                let sys_active = dsp::rms(&sys) > 0.01;
+                for (speaker, pcm, new_len) in [("Remote", &mut sys, sys_new), ("You", &mut mic, mic_new)] {
+                    // Skip mic when system audio is playing — AEC hasn't converged and speaker bleed passes VAD.
+                    if speaker == "You" && sys_active { continue; }
                     let rms = dsp::rms(pcm);
-                    // Force speech to true temporarily for testing to verify Whisper execution
-                    let is_speech = true;
-                    if speaker == "Remote" {
-                        eprintln!("[Loopback VAD] RMS: {}, Is Speech: {} (forced true for testing)", rms, is_speech);
+                    let is_speech = dsp::is_speech(pcm);
+                    if speaker == "Remote" && is_speech {
+                        eprintln!("[Loopback VAD] RMS: {:.5}, speech detected", rms);
                     }
                     if is_speech {
-                        let duration_secs = pcm.len() as f64 / 16_000.0;
+                        // new_len excludes the overlap prefix — gives correct wall-clock start.
+                        let duration_secs = new_len as f64 / 16_000.0;
                         let end_secs = ai::ms_to_secs(now_ms);
                         let start_secs = (end_secs - duration_secs).max(0.0);
 
@@ -209,8 +253,8 @@ pub fn start(
 
                         if let Ok(chunks) = transcription_res {
                             for mut c in chunks {
-                                c.start += start_secs;
-                                c.end += start_secs;
+                                c.start = start_secs;
+                                c.end = end_secs;
                                 tr.lock().unwrap().push(c.clone());
                                 let _ = app.emit("transcript-chunk", serde_json::json!({
                                     "id": fastrand::u32(..),

@@ -14,6 +14,14 @@ pub struct TranscriptChunk {
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct InsightItem {
+    pub kind: String, // "decision" | "action" | "risk" | "discussion"
+    pub text: String,
+    pub owner: Option<String>,
+    pub due: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct EnhancedResult {
     pub enhanced_text: String,
     pub raw_shorthand: String,
@@ -170,6 +178,18 @@ impl FoundryEngine {
             return Ok(Vec::new());
         }
 
+        // Discard Whisper hallucination loops: any 4-gram repeating >3 times signals looping.
+        let words: Vec<&str> = trimmed.split_whitespace().collect();
+        if words.len() >= 16 {
+            let looping = words.windows(4).enumerate().any(|(i, gram)| {
+                words.windows(4).skip(i + 1).filter(|w| *w == gram).count() > 3
+            });
+            if looping {
+                eprintln!("[Whisper] Hallucination loop detected, discarding chunk");
+                return Ok(Vec::new());
+            }
+        }
+
         Ok(vec![TranscriptChunk {
             start: 0.0,
             end: 0.0,
@@ -225,13 +245,13 @@ impl FoundryEngine {
             context_text.push_str(&format!("[{:.1}s - {:.1}s] {}: {}\n", c.start, c.end, c.speaker, c.text));
         }
 
-        let system_prompt = "You are Syntari, an on-device executive meeting synthesizer.\n\
-            Your task is to expand the user's shorthand notes into precise, professional, and factual statements.\n\
-            RULES:\n\
-            1. Rely STRICTLY on the facts stated in the provided transcript context.\n\
-            2. Never hallucinate or infer numbers, dates, or decisions not explicitly stated.\n\
-            3. If the shorthand is a personal reminder not discussed, return the shorthand unchanged.\n\
-            4. Keep output concise (1-2 sentences max). Do not preface with 'Here is...' or conversational filler.";
+        let system_prompt = "You are Syntari, an on-device meeting note assistant.\n\
+            Expand the user's shorthand into one precise sentence using ONLY the provided transcript.\n\
+            STRICT RULES:\n\
+            1. Every word in your output must be directly supported by a quote from the transcript.\n\
+            2. Never add numbers, percentages, names, or dates not explicitly stated in the transcript.\n\
+            3. If you cannot fully ground the expansion, return the raw shorthand unchanged — no paraphrasing.\n\
+            4. One sentence maximum. No preamble, no 'Here is', no 'As discussed'.";
 
         let user_prompt = format!(
             "CONVERSATION CONTEXT:\n{}\n\nUSER SHORTHAND NOTE:\n\"{}\"\n\nEXPANDED FACTUAL NOTE:",
@@ -282,5 +302,103 @@ impl FoundryEngine {
             citation_end: last_chunk.end,
             citation_quote: context_chunks.iter().map(|c| c.text.as_str()).collect::<Vec<_>>().join(" "),
         })
+    }
+
+    /// Extract structured meeting items (decisions, actions, risks) from a transcript window.
+    pub async fn extract_insights(
+        &self,
+        chunks: &[TranscriptChunk],
+    ) -> Result<Vec<InsightItem>, String> {
+        let session = match self.chat_session.as_ref() {
+            Some(s) => s,
+            None => return Ok(Vec::new()),
+        };
+        if chunks.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let context_text = chunks
+            .iter()
+            .map(|c| format!("{}: {}", c.speaker, c.text))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let system_prompt = "Extract key items from this meeting transcript segment.\n\
+            Output ONLY lines in these exact formats (no other text):\n\
+            DECISION: <what was decided>\n\
+            ACTION: <owner> - <task> by <due date>\n\
+            RISK: <risk or blocker>\n\
+            DISCUSSION: <key topic discussed>\n\
+            Rules: only output items explicitly stated. If nothing significant, output NONE.";
+
+        let user_prompt = format!("TRANSCRIPT:\n{}\n\nEXTRACT ITEMS:", context_text);
+
+        let request = Request::from_items(vec![
+            Item::system_message(vec![Item::text(system_prompt)]),
+            Item::user_message(vec![Item::text(user_prompt)]),
+        ]);
+
+        let response = session
+            .process_request(request)
+            .await
+            .map_err(|e| format!("Inference error: {e}"))?;
+
+        let mut raw = String::new();
+        for item in &response.items {
+            if let Some(t) = item.as_text() {
+                raw.push_str(t);
+            } else if let Some(msg) = item.as_message() {
+                for part in &msg.content {
+                    if let Some(t) = part.as_text() {
+                        raw.push_str(t);
+                    }
+                }
+            }
+        }
+
+        let raw = raw.trim().to_string();
+        eprintln!("[Syntari Insights] raw: {:?}", &raw);
+
+        // Discard hallucination loops (same check as Whisper)
+        let words: Vec<&str> = raw.split_whitespace().collect();
+        if words.len() >= 16 {
+            let looping = words.windows(4).enumerate().any(|(i, gram)| {
+                words.windows(4).skip(i + 1).filter(|w| *w == gram).count() > 3
+            });
+            if looping {
+                eprintln!("[Syntari Insights] Hallucination loop detected, discarding");
+                return Ok(Vec::new());
+            }
+        }
+
+        let mut items = Vec::new();
+        for line in raw.lines() {
+            let line = line.trim();
+            if let Some(text) = line.strip_prefix("DECISION:") {
+                items.push(InsightItem { kind: "decision".into(), text: text.trim().into(), owner: None, due: None });
+            } else if let Some(rest) = line.strip_prefix("ACTION:") {
+                let (owner, text, due) = parse_action_line(rest.trim());
+                items.push(InsightItem { kind: "action".into(), text, owner: Some(owner), due });
+            } else if let Some(text) = line.strip_prefix("RISK:") {
+                items.push(InsightItem { kind: "risk".into(), text: text.trim().into(), owner: None, due: None });
+            } else if let Some(text) = line.strip_prefix("DISCUSSION:") {
+                items.push(InsightItem { kind: "discussion".into(), text: text.trim().into(), owner: None, due: None });
+            }
+        }
+        Ok(items)
+    }
+}
+
+fn parse_action_line(s: &str) -> (String, String, Option<String>) {
+    let (owner, task_part) = s
+        .split_once(" - ")
+        .map(|(o, t)| (o.trim().to_string(), t.trim()))
+        .unwrap_or_else(|| ("".into(), s));
+    if let Some(idx) = task_part.rfind(" by ") {
+        let task = task_part[..idx].trim().to_string();
+        let due = task_part[idx + 4..].trim().to_string();
+        (owner, task, Some(due))
+    } else {
+        (owner, task_part.to_string(), None)
     }
 }
