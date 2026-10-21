@@ -35,6 +35,7 @@ export interface Note {
 
 export interface NoteExpandedPayload {
   id: string;
+  category?: NoteKind;
   enhanced_text: string;
   raw_shorthand: string;
   citation_start: number;

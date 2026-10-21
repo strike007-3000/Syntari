@@ -127,6 +127,7 @@ async fn expand_note(
         "note-expanded",
         serde_json::json!({
             "id": id,
+            "category": result.category,
             "enhanced_text": result.enhanced_text,
             "raw_shorthand": result.raw_shorthand,
             "citation_start": result.citation_start,
