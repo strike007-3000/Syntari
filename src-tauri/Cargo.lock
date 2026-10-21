@@ -4610,16 +4610,19 @@ dependencies = [
  "foundry-local-sdk",
  "getrandom 0.2.17",
  "keyring",
+ "libc",
  "libsqlite3-sys",
  "screencapturekit",
  "screencapturekit-sys",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-sql",
  "tokio",
  "tokio-stream",
+ "walkdir",
 ]
 
 [[package]]

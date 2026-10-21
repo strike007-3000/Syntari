@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+pub type Progress = Arc<dyn Fn(&str, f64) + Send + Sync>;
 use foundry_local_sdk::{
     AudioSession, ChatSession, FoundryLocalConfig, FoundryLocalManager, Item, LogLevel, Model, Request,
 };
@@ -30,12 +32,63 @@ pub struct EnhancedResult {
     pub citation_quote: String,
 }
 
+#[allow(dead_code)] // models are held only to keep them loaded for the sessions
 pub struct FoundryEngine {
     speech_model: Option<Arc<Model>>,
     chat_model: Option<Arc<Model>>,
     audio_session: Option<AudioSession>,
     chat_session: Option<ChatSession>,
     is_ready: bool,
+}
+
+/// The only network access in the app: one-time model download when the cache is empty.
+/// Manual update: delete the model folder (or drop files in `SYNTARI_MODELS_DIR`) and restart.
+async fn ensure_cached(model: &Model, name: &str, progress: &Progress) -> Result<(), String> {
+    if !model.is_cached().await.unwrap_or(false) {
+        download(model, name, progress).await?;
+    }
+    verify_integrity(model, name).await
+}
+
+/// Trust-on-first-use integrity check: hashes are recorded after the download and re-checked
+/// on every launch, so corruption or tampering of the weights is caught.
+/// shortcut: no upstream-pinned hashes (the SDK doesn't publish any); pin them here when available.
+async fn verify_integrity(model: &Model, name: &str) -> Result<(), String> {
+    let dir = model.path().await.map_err(|e| format!("{name}: {e}"))?;
+    tokio::task::spawn_blocking(move || {
+        use sha2::{Digest, Sha256};
+        let manifest = dir.join(".syntari-sha256");
+        let mut current = std::collections::BTreeMap::new();
+        for e in walkdir::WalkDir::new(&dir).sort_by_file_name().into_iter().filter_map(Result::ok) {
+            if !e.file_type().is_file() || e.path() == manifest { continue; }
+            let mut h = Sha256::new();
+            std::io::copy(&mut std::fs::File::open(e.path()).map_err(|e| e.to_string())?, &mut h).map_err(|e| e.to_string())?;
+            let rel = e.path().strip_prefix(&dir).unwrap().to_string_lossy().into_owned();
+            current.insert(rel, format!("{:x}", h.finalize()));
+        }
+        match std::fs::read_to_string(&manifest) {
+            Ok(saved) if serde_json::from_str::<std::collections::BTreeMap<String, String>>(&saved).ok().as_ref() == Some(&current) => Ok(()),
+            Ok(_) => Err("model files changed since download (corrupt or tampered); delete the model folder to re-download".to_string()),
+            Err(_) => std::fs::write(&manifest, serde_json::to_string(&current).unwrap()).map_err(|e| e.to_string()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| format!("{name}: {e}"))
+}
+
+async fn download(model: &Model, name: &str, progress: &Progress) -> Result<(), String> {
+    eprintln!("[Syntari] First run: downloading {name} (one-time)");
+    let mut last = -10.0;
+    let label = name.to_string();
+    let report = progress.clone();
+    model
+        .download(Some(move |p: f64| {
+            report(&label, p);
+            if p - last >= 10.0 { last = p; eprintln!("[Syntari] {label}: {p:.0}%"); }
+        }))
+        .await
+        .map_err(|e| format!("Download of {name} failed (offline? see README to import manually): {e}"))
 }
 
 impl FoundryEngine {
@@ -53,8 +106,9 @@ impl FoundryEngine {
         self.is_ready
     }
 
-    /// Initializes Foundry Local using local cached models (Air-Gapped, No Downloads)
-    pub async fn initialize(&mut self, models_dir: PathBuf) -> Result<(), String> {
+    /// Initializes Foundry Local. Models are fetched once on first run, then used offline.
+    /// Builds a ready engine without holding any lock, so a long first-run download never blocks callers.
+    pub async fn load(models_dir: PathBuf, progress: Progress) -> Result<Self, String> {
         let models_dir_str = models_dir
             .to_str()
             .ok_or_else(|| "models directory path is not valid UTF-8".to_string())?;
@@ -89,16 +143,14 @@ impl FoundryEngine {
 
         let catalog = manager.catalog();
 
-        // 2. Load Speech-to-Text Model (whisper-tiny)
+        // 2. Load Speech-to-Text Model (whisper-small)
         let speech_model = catalog
-            .get_model("whisper-tiny")
+            .get_model("whisper-small")
             .await
             .map_err(|e| format!("Whisper model lookup failed: {e}"))?;
 
         // Fail-safe check: Model must be pre-packaged in resource directory
-        if !speech_model.is_cached().await.unwrap_or(false) {
-            return Err("Whisper model is not pre-packaged in local resources.".into());
-        }
+        ensure_cached(&speech_model, "whisper-small", &progress).await?;
 
         speech_model
             .load()
@@ -109,15 +161,13 @@ impl FoundryEngine {
             .await
             .map_err(|e| format!("Failed to create AudioSession: {e}"))?;
 
-        // 3. Load Chat / Expansion Model (qwen2.5-0.5b or phi-4-mini)
+        // 3. Load Chat / Expansion Model (phi-4-mini)
         let chat_model = catalog
-            .get_model("qwen2.5-0.5b")
+            .get_model("phi-4-mini")
             .await
             .map_err(|e| format!("Chat model lookup failed: {e}"))?;
 
-        if !chat_model.is_cached().await.unwrap_or(false) {
-            return Err("Expansion chat model is not pre-packaged in local resources.".into());
-        }
+        ensure_cached(&chat_model, "phi-4-mini", &progress).await?;
 
         chat_model
             .load()
@@ -128,13 +178,13 @@ impl FoundryEngine {
             .await
             .map_err(|e| format!("Failed to create ChatSession: {e}"))?;
 
-        self.speech_model = Some(speech_model);
-        self.chat_model = Some(chat_model);
-        self.audio_session = Some(audio_session);
-        self.chat_session = Some(chat_session);
-        self.is_ready = true;
-
-        Ok(())
+        Ok(Self {
+            speech_model: Some(speech_model),
+            chat_model: Some(chat_model),
+            audio_session: Some(audio_session),
+            chat_session: Some(chat_session),
+            is_ready: true,
+        })
     }
 
     /// Transcribes an in-memory/RAM audio byte buffer using the local speech-to-text model session
@@ -145,7 +195,7 @@ impl FoundryEngine {
     ) -> Result<Vec<TranscriptChunk>, String> {
         let session = self.audio_session.as_ref().ok_or("Audio session not initialized")?;
 
-        eprintln!("[Whisper] Submitting {} bytes to whisper-tiny", wav_bytes.len());
+        eprintln!("[Whisper] Submitting {} bytes to whisper-small", wav_bytes.len());
 
         // Zero-forensic RAII ephemeral file handler:
         // Foundry Local SDK requires a file URI on macOS/Darwin runtime.
@@ -162,8 +212,16 @@ impl FoundryEngine {
         }
 
         let temp_path = std::env::temp_dir().join(format!("syntari_ephemeral_{}_{}.wav", fastrand::u64(..), fastrand::u32(..)));
-        std::fs::write(&temp_path, wav_bytes)
-            .map_err(|e| format!("Failed to stage ephemeral audio: {e}"))?;
+        {
+            use std::io::Write;
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+            opts.open(&temp_path)
+                .and_then(|mut f| f.write_all(wav_bytes))
+                .map_err(|e| format!("Failed to stage ephemeral audio: {e}"))?;
+        }
         let _guard = EphemeralAudioFile(temp_path.clone(), wav_bytes.len());
 
         let path_str = temp_path.to_string_lossy().to_string();
@@ -175,6 +233,13 @@ impl FoundryEngine {
 
         let trimmed = text.trim();
         if trimmed.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Whisper emits "(soft music)" / "[BLANK_AUDIO]" for non-speech; not a transcript.
+        let bare = trimmed.trim_matches(|c: char| c.is_whitespace() || "()[]*♪.".contains(c));
+        let wrapped = (trimmed.starts_with('(') && trimmed.ends_with(')')) || (trimmed.starts_with('[') && trimmed.ends_with(']'));
+        if bare.is_empty() || wrapped {
             return Ok(Vec::new());
         }
 
@@ -372,7 +437,10 @@ impl FoundryEngine {
         }
 
         let mut items = Vec::new();
-        for line in raw.lines() {
+        for line in raw.lines().filter(|l| {
+            let t = l.rsplit(':').next().unwrap_or("").trim().trim_end_matches('.').to_lowercase();
+            !matches!(t.as_str(), "" | "none" | "none provided" | "n/a" | "none stated")
+        }) {
             let line = line.trim();
             if let Some(text) = line.strip_prefix("DECISION:") {
                 items.push(InsightItem { kind: "decision".into(), text: text.trim().into(), owner: None, due: None });

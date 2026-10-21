@@ -160,16 +160,8 @@ fn get_db_key() -> Result<String, String> {
 }
 
 pub fn run() {
-    let db_key = get_or_create_db_key().unwrap_or_else(|e| {
-        eprintln!("[Syntari] Keychain error, falling back to unencrypted DB: {e}");
-        String::new()
-    });
-
-    let db_url = if db_key.is_empty() {
-        "sqlite:syntari.db".to_string()
-    } else {
-        format!("sqlite:syntari.db?key={db_key}")
-    };
+    // No unencrypted fallback: without a keychain key the SQL plugin is not registered and nothing is persisted.
+    let db_key = get_or_create_db_key().map_err(|e| eprintln!("[Syntari] Keychain error, notes will not be saved: {e}")).ok();
 
     let migrations = vec![Migration {
         version: 1,
@@ -178,25 +170,36 @@ pub fn run() {
         kind: MigrationKind::Up,
     }];
 
-    tauri::Builder::default()
-        .plugin(Sql::default().add_migrations(&db_url, migrations).build())
+    let mut builder = tauri::Builder::default();
+    if let Some(key) = db_key {
+        builder = builder.plugin(Sql::default().add_migrations(&format!("sqlite:syntari.db?key={key}"), migrations).build());
+    }
+    builder
         .setup(|app| {
-            let resource_path = app
-                .path()
-                .resource_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join("resources/models");
+            let resource_path = std::env::var("SYNTARI_MODELS_DIR").map(PathBuf::from).unwrap_or_else(|_| {
+                app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from(".")).join("models")
+            });
 
             let engine = Arc::new(AsyncMutex::new(FoundryEngine::new()));
             let engine_clone = Arc::clone(&engine);
+            let handle = app.handle().clone();
 
             // Asynchronously initialize local models in background
             tauri::async_runtime::spawn(async move {
-                let mut guard = engine_clone.lock().await;
-                if let Err(e) = guard.initialize(resource_path).await {
-                    eprintln!("[Syntari AI Init Error]: {}", e);
-                } else {
+                use tauri::Emitter;
+                let h = handle.clone();
+                let progress: ai::engine::Progress =
+                    Arc::new(move |name, pct| { let _ = h.emit("model-progress", serde_json::json!({ "name": name, "percent": pct })); });
+                match FoundryEngine::load(resource_path, progress).await {
+                    Err(e) => {
+                        eprintln!("[Syntari AI Init Error]: {}", e);
+                        let _ = handle.emit("model-error", e);
+                    }
+                    Ok(loaded) => {
+                    *engine_clone.lock().await = loaded;
+                    let _ = handle.emit("models-ready", ());
                     println!("[Syntari AI]: Offline Foundry Local models loaded successfully.");
+                    }
                 }
             });
 
@@ -218,6 +221,17 @@ pub fn run() {
             extract_insights,
             get_db_key
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Syntari application");
+        .build(tauri::generate_context!())
+        .expect("error while building Syntari application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                if let Some((sess, _)) = app.state::<AppState>().session.lock().unwrap().take() {
+                    let _ = sess.stop();
+                }
+                // Foundry's native Manager aborts (SIGABRT in SpdlogLogger dtor) when C++ static destructors
+                // run at normal process exit; skip them. shortcut: revisit when Foundry fixes its teardown.
+                #[cfg(unix)]
+                unsafe { libc::_exit(0) }
+            }
+        });
 }

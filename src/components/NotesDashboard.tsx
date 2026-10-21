@@ -64,19 +64,19 @@ export const toMarkdown = (notes: Note[]) =>
     return `## ${title}\n${lines.join("\n")}`;
   }).filter(Boolean).join("\n\n");
 
-export default function ArchitectDashboard() {
+export default function NotesDashboard() {
   const { notes, view, setView } = useStore();
   return (
-    <section className="flex h-full flex-col" aria-label="Architect view">
+    <section className="flex h-full flex-col" aria-label="Notes view">
       <nav className="flex gap-1 border-b border-ink-700 p-2 text-sm">
-        {(["architect", "markdown"] as const).map((v) => (
+        {(["notes", "markdown"] as const).map((v) => (
           <button key={v} onClick={() => setView(v)} className={`rounded px-3 py-1 ${view === v ? "bg-ink-700 text-white font-medium" : "text-slate-400 hover:text-slate-200"}`}>
-            {v === "markdown" ? "Markdown Doc" : "Architect View"}
+            {v === "markdown" ? "Markdown" : "Notes"}
           </button>
         ))}
       </nav>
       <div className="flex-1 overflow-y-auto p-3">
-        {view === "architect" &&
+        {view === "notes" &&
           SECTIONS.map(({ kind, title }) => {
             const items = notes.filter((n) => n.kind === kind);
             return (

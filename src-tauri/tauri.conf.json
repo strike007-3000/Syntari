@@ -20,7 +20,6 @@
     "active": true,
     "targets": "all",
     "icon": ["icons/icon.png"],
-    "resources": ["resources/**/*"],
     "macOS": {
       "minimumSystemVersion": "13.0",
       "infoPlist": "Info.plist"

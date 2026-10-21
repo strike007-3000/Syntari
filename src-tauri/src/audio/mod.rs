@@ -8,7 +8,7 @@ mod loopback;
 #[path = "loopback_windows.rs"]
 mod loopback;
 
-use crate::ai::{self, engine::FoundryEngine, Transcript};
+use crate::ai::{engine::FoundryEngine, Transcript};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -17,7 +17,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
-const WINDOW_SECS: u64 = 5;
+// Whisper-tiny needs sentence-sized context; 5 s windows / 0.5 s slices were chopping speech mid-phrase.
+const WINDOW_SECS: u64 = 12;
 const MAX_BUF: usize = 16_000 * 30; // circular cap: 30 s per track, RAM only
 // Samples kept in the ring buffer after each window drain to give Whisper sentence context.
 const OVERLAP_SAMPLES: usize = 8_000; // 0.5 s @ 16 kHz
@@ -117,7 +118,7 @@ pub fn start(
     cap: Arc<Capture>,
     tr: Arc<Transcript>,
     engine: Arc<tokio::sync::Mutex<FoundryEngine>>,
-    t0: Instant,
+    _t0: Instant,
 ) -> Result<Session, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
@@ -164,18 +165,20 @@ pub fn start(
         let _ = tx.send(Ok(()));
 
         let mut aec = dsp::Aec::new();
+        // Samples drained per track so far: a sample clock keeps chunk times monotonic even when transcription lags.
+        let (mut sys_done, mut mic_done) = (0usize, 0usize);
         let mut last = Instant::now();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
 
-        // Minimum samples before we'll slice on a silence gap (0.5 s @ 16 kHz).
-        const MIN_SEGMENT: usize = 8_000;
+        // Minimum samples before we'll slice on a silence gap (3 s @ 16 kHz).
+        const MIN_SEGMENT: usize = 48_000;
 
         loop {
             let stopping = stop2.load(Ordering::Relaxed);
-            let has_window_samples = cap.sys.lock().unwrap().len() >= 80_000 || cap.mic.lock().unwrap().len() >= 80_000;
+            let has_window_samples = cap.sys.lock().unwrap().len() >= 16_000 * WINDOW_SECS as usize || cap.mic.lock().unwrap().len() >= 16_000 * WINDOW_SECS as usize;
             // Fire early when a natural pause is found in the accumulated system audio.
             let has_silence_gap = {
                 let b = cap.sys.lock().unwrap();
@@ -186,7 +189,6 @@ pub fn start(
             };
             if stopping || has_window_samples || has_silence_gap || last.elapsed() >= Duration::from_secs(WINDOW_SECS) {
                 last = Instant::now();
-                let now_ms = t0.elapsed().as_millis() as u64;
 
                 // Drain to the silence gap when one exists, otherwise drain all-but-OVERLAP.
                 let (mut sys, sys_new) = {
@@ -223,8 +225,11 @@ pub fn start(
                     aec.process(&mut mic, &sys);
                 }
 
+                let (sys_start, mic_start) = (sys_done, mic_done);
+                sys_done += sys_new;
+                mic_done += mic_new;
                 let sys_active = dsp::rms(&sys) > 0.01;
-                for (speaker, pcm, new_len) in [("Remote", &mut sys, sys_new), ("You", &mut mic, mic_new)] {
+                for (speaker, pcm, begin) in [("Remote", &mut sys, sys_start), ("You", &mut mic, mic_start)] {
                     // Skip mic when system audio is playing — AEC hasn't converged and speaker bleed passes VAD.
                     if speaker == "You" && sys_active { continue; }
                     let rms = dsp::rms(pcm);
@@ -233,10 +238,8 @@ pub fn start(
                         eprintln!("[Loopback VAD] RMS: {:.5}, speech detected", rms);
                     }
                     if is_speech {
-                        // new_len excludes the overlap prefix — gives correct wall-clock start.
-                        let duration_secs = new_len as f64 / 16_000.0;
-                        let end_secs = ai::ms_to_secs(now_ms);
-                        let start_secs = (end_secs - duration_secs).max(0.0);
+                        let start_secs = begin as f64 / 16_000.0;
+                        let end_secs = start_secs + pcm.len() as f64 / 16_000.0;
 
                         let wav_bytes = create_wav_buffer(pcm, 16_000);
                         let engine_clone = engine.clone();

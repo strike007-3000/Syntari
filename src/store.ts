@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import Database from "@tauri-apps/plugin-sql";
 import { Note, NoteExpandedPayload, TranscriptChunk, AudioLevels, parseShorthand } from "./types";
 
-export type View = "architect" | "markdown";
+export type View = "notes" | "markdown";
 
 interface InsightItem {
   kind: string;
@@ -36,6 +36,8 @@ interface State {
   pushAutoNote: (item: InsightItem, tsMs: number) => void;
   acceptSuggestion: (id: string) => void;
   dismissSuggestion: (id: string) => void;
+  listSessions: () => Promise<{ id: number; started_at: number }[]>;
+  loadSession: (id: number) => Promise<void>;
 }
 
 let db: Promise<Database> | null = null;
@@ -63,7 +65,7 @@ export const useStore = create<State>((set, get) => ({
   notes: [],
   transcript: [],
   levels: { mic: 0, system: 0 },
-  view: "architect",
+  view: "notes",
   focusChunk: null,
   setView: (view) => set({ view }),
 
@@ -257,6 +259,26 @@ export const useStore = create<State>((set, get) => ({
 
   dismissSuggestion(id) {
     set((s) => ({ notes: s.notes.filter((n) => n.id !== id) }));
+  },
+
+  async listSessions() {
+    return (await getDb()).select("SELECT id, started_at FROM sessions ORDER BY started_at DESC LIMIT 100");
+  },
+
+  async loadSession(id) {
+    if (get().running) return;
+    const d = await getDb();
+    const rows = await d.select<any[]>("SELECT * FROM notes WHERE session_id=? ORDER BY ts_ms", [id]);
+    const chunks = await d.select<any[]>("SELECT * FROM transcript WHERE session_id=? ORDER BY chunk_id", [id]);
+    set({
+      sessionId: id,
+      notes: rows.map((r) => ({
+        id: r.id, kind: r.kind, raw: r.raw, ts: r.ts_ms, status: "completed", expanded: r.expanded ?? undefined,
+        owner: r.owner ?? undefined, due: r.due ?? undefined, done: !!r.done,
+        citation: r.citation_quote ? { chunkIds: [], quote: r.citation_quote } : undefined,
+      })),
+      transcript: chunks.map((r) => ({ id: r.chunk_id, speaker: r.speaker, text: r.text, ts: r.ts_ms })),
+    });
   },
 
   setLevels: (levels) => set({ levels }),
