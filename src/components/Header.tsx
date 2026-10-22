@@ -96,6 +96,13 @@ export default function Header() {
             >
               Copy Markdown
             </button>
+            <button
+              onClick={() => invoke("export_markdown", { content: toMarkdown(notes) }).catch((e) => alert(String(e)))}
+              className="rounded-md border border-ink-700 bg-ink-800 px-2.5 py-1 text-xs text-slate-300 transition-colors hover:text-white"
+              title="Save to your Downloads folder"
+            >
+              Export .md
+            </button>
           </>
         )}
         <span className="font-mono text-sm font-semibold tracking-wider text-slate-200">

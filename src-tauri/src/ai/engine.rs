@@ -26,6 +26,8 @@ pub struct InsightItem {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct EnhancedResult {
     pub category: String, // "decision" | "action" | "risk" | "discussion"
+    pub owner: Option<String>,
+    pub due: Option<String>,
     pub enhanced_text: String,
     pub raw_shorthand: String,
     pub citation_start: f64,
@@ -277,6 +279,8 @@ impl FoundryEngine {
                 // Graceful fallback when model is not yet loaded: preserve raw shorthand
                 return Ok(EnhancedResult {
                     category: "discussion".into(),
+                    owner: None,
+                    due: None,
                     enhanced_text: raw_shorthand.to_string(),
                     raw_shorthand: raw_shorthand.to_string(),
                     citation_start: keystroke_time,
@@ -316,6 +320,9 @@ impl FoundryEngine {
             - discussion: a topic talked about, an idea, or a tentative suggestion (\"Maybe we should switch vendors\") with no commitment.\n\
             When unsure, choose discussion.\n\
             NOTE: <one sentence>\n\
+            OWNER: <person responsible, or none>\n\
+            DUE: <deadline as stated, or none>\n\
+            OWNER and DUE only apply to actions; write none otherwise.\n\
             STRICT RULES:\n\
             1. Every word in your output must be directly supported by a quote from the transcript.\n\
             2. Never add numbers, percentages, names, or dates not explicitly stated in the transcript.\n\
@@ -354,11 +361,17 @@ impl FoundryEngine {
         // The model may or may not repeat "CATEGORY:", so take the first category word on any line before NOTE.
         let mut category = "discussion".to_string();
         let mut note = String::new();
+        let (mut owner, mut due) = (None, None);
         let mut found = false;
         for line in enhanced_text.lines() {
             let l = line.trim();
+            let field = |v: &str| Some(v.trim().to_string()).filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("none"));
             if let Some(n) = l.strip_prefix("NOTE:") {
                 note = n.trim().to_string();
+            } else if let Some(v) = l.strip_prefix("OWNER:") {
+                owner = field(v);
+            } else if let Some(v) = l.strip_prefix("DUE:") {
+                due = field(v);
             } else if !found {
                 let lower = l.to_lowercase();
                 if let Some(c) = ["decision", "action", "risk", "discussion"].iter().find(|c| lower.contains(*c)) {
@@ -379,6 +392,8 @@ impl FoundryEngine {
 
         Ok(EnhancedResult {
             category,
+            owner,
+            due,
             enhanced_text: note,
             raw_shorthand: raw_shorthand.to_string(),
             citation_start,

@@ -46,6 +46,18 @@ fn start_syntari_session(app: AppHandle, st: State<'_, AppState>) -> Result<(), 
     Ok(())
 }
 
+/// Writes the notes to ~/Downloads and reveals the file in Finder.
+#[tauri::command]
+fn export_markdown(content: String) -> Result<String, String> {
+    let home = std::env::var("HOME").map_err(|e| e.to_string())?;
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_secs();
+    let path = std::path::Path::new(&home).join("Downloads").join(format!("syntari-notes-{secs}.md"));
+    std::fs::write(&path, content).map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg("-R").arg(&path).spawn();
+    Ok(path.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 fn stop_syntari_session(st: State<'_, AppState>) -> Result<(), String> {
     match st.session.lock().unwrap().take() {
@@ -128,6 +140,8 @@ async fn expand_note(
         serde_json::json!({
             "id": id,
             "category": result.category,
+            "owner": result.owner,
+            "due": result.due,
             "enhanced_text": result.enhanced_text,
             "raw_shorthand": result.raw_shorthand,
             "citation_start": result.citation_start,
@@ -219,6 +233,7 @@ pub fn run() {
             check_permissions,
             open_system_settings,
             expand_note,
+            export_markdown,
             extract_insights,
             get_db_key
         ])

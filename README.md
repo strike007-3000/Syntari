@@ -182,7 +182,9 @@ npm run tauri dev
 * **Keychain prompt on every dev rebuild:** unsigned dev builds are a new app to macOS each time; enter your login password and choose *Always Allow*. Denying means no persistence.
 * **First launch is slow:** ~4 GB of models download once (progress in the header). Transcription is unavailable until it finishes.
 * **Transcript accuracy:** speech is cut on silence gaps (3 s minimum, 12 s maximum) and transcribed by whisper-small. Larger models (`whisper-medium`, `whisper-large-v3-turbo`) are in the Foundry catalog but not wired up. Non-speech tags like `(soft music)` are discarded.
-* **You-track gaps:** the mic track is skipped while system audio is playing (echo canceller not converged), so speech during remote audio is not transcribed.
+* **You-track during remote audio:** the mic track is kept while system audio plays only if its energy after echo cancellation exceeds 0.005 RMS (`audio/mod.rs`). The threshold is untuned; speaker bleed may be transcribed as "You" or quiet speech dropped. Use headphones for best results.
 * **Exit behaviour:** Foundry's native runtime aborts in a C++ destructor on normal process exit (macOS "quit unexpectedly" dialog). Syntari stops the session and then exits with `_exit(0)` to skip it.
 * **Foundry runtime is closed source:** it may make its own telemetry/metadata requests; verify with `scripts/check-egress.sh` or a network monitor. The native library is currently located via Homebrew paths (`brew install foundrylocal`); bundling it for distribution is not done and needs a license review.
-* **Not implemented:** file export (only clipboard), signed/notarized release builds, upstream-pinned model hashes.
+* **Export:** *Export .md* saves to `~/Downloads` (no save dialog).
+* **Note classification:** untyped notes are filed by phi-4-mini (decision/action/risk/discussion); `dec:`/`act:`/`risk:` prefixes override it, and each note has a *move to* menu.
+* **Not implemented:** signed/notarized release builds, upstream-pinned model hashes.

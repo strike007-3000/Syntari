@@ -194,6 +194,8 @@ export const useStore = create<State>((set, get) => ({
           ? {
               ...n,
               kind: e.category && !typedKinds.has(n.id) ? e.category : n.kind,
+              owner: n.owner ?? e.owner ?? undefined,
+              due: n.due ?? e.due ?? undefined,
               status: "completed",
               expanded: e.enhanced_text || n.raw,
               citation: e.citation_quote
@@ -211,8 +213,8 @@ export const useStore = create<State>((set, get) => ({
 
     persist((d) =>
       d.execute(
-        "UPDATE notes SET expanded=?, citation_quote=?, citation_chunks=?, kind=COALESCE(?, kind) WHERE id=?",
-        [e.enhanced_text, e.citation_quote ?? null, "[]", typedKinds.has(e.id) ? null : e.category ?? null, e.id],
+        "UPDATE notes SET expanded=?, citation_quote=?, citation_chunks=?, kind=COALESCE(?, kind), owner=COALESCE(owner, ?), due=COALESCE(due, ?) WHERE id=?",
+        [e.enhanced_text, e.citation_quote ?? null, "[]", typedKinds.has(e.id) ? null : e.category ?? null, e.owner ?? null, e.due ?? null, e.id],
       ),
     );
   },
