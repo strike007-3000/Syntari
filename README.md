@@ -22,7 +22,7 @@ Most generative AI summary tools output generic, unstructured walls of text. The
 
 Syntari pairs human intentionality with local AI:
 
-1. **The Human Directs Intent:** The user types quick shorthand tags during the meeting (e.g., `dec: pricing $45 Nov`, `act: Sarah Deploy fix Fri`, `risk: SOC2 latency`).
+1. **The Human Directs Intent:** The user types quick notes during the meeting (e.g., `pricing set to $45 from November`). The local model files each note as a decision, action, risk, or discussion point. Optional shorthand tags (`dec:`, `act:`, `risk:`) skip the model and choose the category directly.
 2. **The System Captures Context:** Syntari records audio continuously in volatile RAM buffers.
 3. **The Local AI Expands Factually:** Using a focused lookback slice ($[T - 45\text{s}, T + 10\text{s}]$ relative to keystroke time), an on-device language model enriches the shorthand note with the exact dialogue spoken in that window.
 4. **Zero-Hallucination Fallback:** If the shorthand topic was not explicitly discussed in the audio slice, the model retains the user's raw note rather than fabricating details.
@@ -75,12 +75,22 @@ Syntari pairs human intentionality with local AI:
 
 ---
 
-## 4. Shorthand Syntax Reference
+## 4. Note Classification & Shorthand
 
-Syntari automatically routes and structures notes when prefixed with shorthand tokens:
+Type plain notes; no syntax is required. In a single model call, phi-4-mini classifies each note (`decision`, `action`, `risk`, or `discussion`) and expands it from the surrounding transcript. For actions it also extracts the owner and due date when stated. A note appears immediately as Discussion and moves to its card when the model answers; if the answer is missing or unrecognised it stays in Discussion. Every note has a hover *Move to* menu to correct the category, and a manual choice is never overwritten.
+
+Optional shorthand prefixes skip classification and set the category instantly (case-insensitive):
 
 | Prefix | Schema Category | Example Input | Expanded Output |
 | :--- | :--- | :--- | :--- |
+| `dec:` | Decisions | `dec: pricing $45 Nov` | Enterprise pricing tier set to $45 starting November. |
+| `act:` | Action Items | `act: Sarah API audit Fri` | Sarah to complete the API security audit before Friday's release. |
+| `risk:` | Risks & Blockers | `risk: DB lockup on migrate` | Risk identified regarding potential database lockup during table migration. |
+| *(none)* | Model decides | `Dana will send the contract by Friday` | Filed under Action Items with owner Dana, due Friday. |
+
+For `act:`, the first word is the owner only if it is capitalised and followed by a task (`act: ship it` has no owner). A trailing weekday, date, `tomorrow`, `eod` or `eow` becomes the due date.
+
+--- | :--- | :--- | :--- |
 | `dec:` | Decisions | `dec: pricing $45 Nov` | Enterprise pricing tier set to $45 starting November. |
 | `act:` | Action Items | `act: Sarah API audit Fri` | Sarah to complete the API security audit before Friday's release. |
 | `risk:` | Risks & Blockers | `risk: DB lockup on migrate` | Risk identified regarding potential database lockup during table migration. |
@@ -155,10 +165,11 @@ Models are not bundled or committed. On first launch Syntari downloads whisper-s
 
 ### Using the App
 
-* **Start / Stop** a session from the header; the left pad takes your shorthand, the middle panel structures it, the right drawer shows the live transcript.
+* **Start / Stop** a session from the header; the left pad takes your notes, the middle panel structures it, the right drawer shows the live transcript.
 * **AI suggestions:** every 30 s the local model proposes decisions/actions/risks from the transcript. They appear only in the Notes panel (amber) until you **Accept** or **Dismiss** them.
 * **History:** when no session is running, the header's *History* dropdown reloads any past session (notes + transcript).
-* **Export:** *Copy Markdown* copies the current notes to the clipboard.
+* **Export:** *Copy Markdown* copies the current notes to the clipboard; *Export .md* saves them to `~/Downloads` and reveals the file in Finder.
+* **Moving notes:** hover a note and use its dropdown to move it to another card.
 * **Status pill:** shows one-time model download progress, model errors, or "Keychain unavailable: notes will not be saved".
 
 ### Running Locally
@@ -185,6 +196,5 @@ npm run tauri dev
 * **You-track during remote audio:** the mic track is kept while system audio plays only if its energy after echo cancellation exceeds 0.005 RMS (`audio/mod.rs`). The threshold is untuned; speaker bleed may be transcribed as "You" or quiet speech dropped. Use headphones for best results.
 * **Exit behaviour:** Foundry's native runtime aborts in a C++ destructor on normal process exit (macOS "quit unexpectedly" dialog). Syntari stops the session and then exits with `_exit(0)` to skip it.
 * **Foundry runtime is closed source:** it may make its own telemetry/metadata requests; verify with `scripts/check-egress.sh` or a network monitor. The native library is currently located via Homebrew paths (`brew install foundrylocal`); bundling it for distribution is not done and needs a license review.
-* **Export:** *Export .md* saves to `~/Downloads` (no save dialog).
-* **Note classification:** untyped notes are filed by phi-4-mini (decision/action/risk/discussion); `dec:`/`act:`/`risk:` prefixes override it, and each note has a *move to* menu.
+* **Classification accuracy:** phi-4-mini is a small model; ambiguous or tentative notes may be mis-filed. Use the *Move to* menu. Export has no save dialog (always `~/Downloads`).
 * **Not implemented:** signed/notarized release builds, upstream-pinned model hashes.
