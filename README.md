@@ -2,6 +2,15 @@
 
 Syntari is a privacy-first, on-device desktop meeting synthesizer and contextual shorthand expander designed for software architects, engineering leads, and technical executives. Built on Tauri v2, React, and Foundry Local ONNX models, Syntari converts brief shorthand keystrokes into grounded, structured meeting records in real time—with no telemetry of its own. After a one-time model download it runs fully offline; no audio, transcripts or notes ever leave your device.
 
+
+### About the name
+
+**Syntari** is a blend:
+
+* **Synth-**: synthesis. The app takes messy inputs (live dual-track transcripts and brief human shorthand) and synthesizes them in real time into structured artifacts: Decisions, Actions, Risks.
+* **-tari**: a nod to **Tauri**, the Rust desktop framework behind the cross-platform runtime, strict CSP and sandboxing.
+* **Notary / syntax**: phonetically it suggests a digital notary (a neutral record-keeper for decisions) and the extraction of structured syntax from raw speech.
+
 ---
 
 ## 1. Why Syntari? The Idea & Problem Space
@@ -42,35 +51,42 @@ Syntari pairs human intentionality with local AI:
 ## 3. System Architecture
 
 ```text
-┌────────────────────────────────────────────────────────────────────────┐
-│                               Frontend                                 │
-│  React 18 + TypeScript + Tailwind CSS + Zustand (Zero-Egress CSP)   │
-│                                                                        │
-│  ┌───────────────────────┐  ┌────────────────────┐  ┌───────────────┐  │
-│  │ Shorthand Scratchpad  │  │  Notes View        │  │  Transcript   │  │
-│  │ (Raw Tagged Notes)    │  │  (Schema Cards)    │  │  (Audio Log)  │  │
-│  └───────────┬───────────┘  └─────────▲──────────┘  └───────▲───────┘  │
-└──────────────┼────────────────────────┼─────────────────────┼──────────┘
-               │ invoke("expand_note")   │ "note-expanded"     │ "stt-chunk"
-               ▼                        │                     │
-┌────────────────────────────────────────────────────────────────────────┐
-│                        Tauri v2 Core (Rust)                            │
-│                                                                        │
-│  ┌───────────────────────────────────┐  ┌───────────────────────────┐  │
-│  │           Audio Engine            │  │     Foundry AI Engine     │  │
-│  │ ───────────────────────────────── │  │ ───────────────────────── │  │
-│  │ • Mic (cpal)                      │  │ • whisper-small (ONNX)     │  │
-│  │ • System Loopback (ScreenCapture) │  │   In-memory STT streaming │  │
-│  │ • 16 kHz Downmix & Resampler      │  │ • phi-4-mini (WebGPU)   │  │
-│  │ • NLMS Echo Canceller (2048 taps) │  │   Contextual Expansion    │  │
-│  │ • Frame-Sliced Ducking (-18 dB)   │  │ • Anti-hallucination      │  │
-│  │ • Circular In-Memory RAM Buffer   │  │   prompt templates        │  │
-│  └───────────────────────────────────┘  └───────────────────────────┘  │
-│                                                                        │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │ Local Persistence: SQLCipher (AES-256) via OS Credential Vault   │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-└────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│           FRONTEND: React 18 + TypeScript + Tailwind 3 + Zustand           │
+│                                                                            │
+│                    Zero-egress CSP (default-src 'self')                    │
+│                                                                            │
+│   ┌────────────────────┐  ┌────────────────────┐  ┌────────────────────┐   │
+│   │   Shorthand Pad    │  │  Notes Dashboard   │  │ Transcript Drawer  │   │
+│   │ (raw tagged notes) │  │   (schema cards)   │  │    (audio log)     │   │
+│   └────────────────────┘  └────────────────────┘  └────────────────────┘   │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+               │                       ▲                       ▲
+               │ invoke                │ event                 │ event
+               │ expand_note           │ note-expanded         │ stt-chunk
+               ▼                       │                       │
+┌────────────────────────────────────────────────────────────────────────────┐
+│                            TAURI v2 CORE (Rust)                            │
+│                                                                            │
+│ ┌──────────────────────────────────┐  ┌──────────────────────────────────┐ │
+│ │           AUDIO ENGINE           │  │        FOUNDRY AI ENGINE         │ │
+│ │──────────────────────────────────│  │──────────────────────────────────│ │
+│ │• Mic: cpal (both OS)             │  │• whisper-small (ONNX)            │ │
+│ │• System audio:                   │  │    chunked speech-to-text        │ │
+│ │    macOS: ScreenCaptureKit       │  │• phi-4-mini                      │ │
+│ │    Windows: WASAPI loopback      │  │    classify / expand / insights  │ │
+│ │• 16 kHz downmix + resampler      │  │• Anti-hallucination prompts      │ │
+│ │• NLMS echo canceller             │  │• Models: first-run download,     │ │
+│ │• Frame-sliced ducking (-18 dB)   │  │    SHA-256 verified              │ │
+│ │• In-memory RAM ring buffer       │  │• MIT runtime bundled in app      │ │
+│ └──────────────────────────────────┘  └──────────────────────────────────┘ │
+│                                                                            │
+│       ┌────────────────────────────────────────────────────────────┐       │
+│       │      SQLCipher (AES-256), key in OS credential vault       │       │
+│       └────────────────────────────────────────────────────────────┘       │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -130,12 +146,18 @@ syntari/
 │   │   ├── audio/
 │   │   │   ├── mod.rs                 # Audio pipeline coordinator & ring buffers
 │   │   │   ├── dsp.rs                 # Resampling, NLMS filter, frame ducking
-│   │   │   └── macos_sc_tap.rs        # Native ScreenCaptureKit loopback tap
+│   │   │   ├── macos_sc_tap.rs        # Native ScreenCaptureKit loopback tap (macOS)
+│   │   │   ├── loopback_macos.rs      # Virtual-device fallback (macOS)
+│   │   │   └── loopback_windows.rs    # WASAPI loopback via cpal (Windows)
 │   │   ├── lib.rs                     # Tauri IPC command handlers
 │   │   └── main.rs                    # Application entry point
 │   ├── migrations/001_init.sql        # Sessions, notes, transcript schema
 │   ├── tauri.conf.json                # Tauri v2 bundle, CSP, and window config
+│   ├── tauri.windows-bundle.conf.json # Extra resources for the Windows installer (runtime DLLs, notices)
+│   ├── licenses/                      # MIT license + third-party notices for the bundled Foundry runtime
+│   ├── icons/                         # App icons (placeholder; regenerate with `tauri icon`)
 │   └── Cargo.toml                     # Rust dependencies & platform targets
+├── .github/workflows/windows.yml      # Windows CI: tsc, vitest, frontend build, cargo check; manual installer build
 └── scripts/check-egress.sh            # Lists the running app's network sockets
 
 Models are NOT in the repo or the bundle; they live in the app data dir (see Models).
@@ -205,7 +227,28 @@ npm run tauri dev
 
 ---
 
-## 9. Testing on Windows
+## 9. Platform Support & Change Log
+
+| | macOS | Windows |
+| :--- | :--- | :--- |
+| Mic capture | cpal | cpal |
+| System audio | ScreenCaptureKit (permission prompt) | WASAPI loopback, default output device (no prompt) |
+| Foundry runtime | Homebrew copy today (bundling is a follow-up) | Downloaded by the SDK at build time; bundled in the installer |
+| Key storage | Keychain | Credential Manager |
+| Exit workaround | `_exit(0)` | `TerminateProcess` |
+| Status | Primary, tested | Compiles in CI; awaiting hardware test |
+
+**Recent changes**
+
+* **Windows support:** export path falls back to `USERPROFILE` and reveals the file in Explorer; settings shortcut opens the Windows microphone privacy page; Foundry library name is platform-aware; Windows exit handler; real (placeholder) icons so the bundle builds.
+* **CI:** `.github/workflows/windows.yml` runs `tsc`, `vitest`, the frontend build and `cargo check` on `windows-latest`. A manual run also stages the runtime DLLs, builds the NSIS installer, verifies it contains `foundry_local.dll`, and uploads it as an artifact.
+* **Installer bundling:** the MIT Foundry runtime DLLs and license notices ship next to the exe (see licensing in section 8); a failed runtime load shows a clear "reinstall" message.
+* **Dependencies:** Tailwind pinned to 3.x (the v4 bump broke the frontend build); `@vitejs/plugin-react` 6 for Vite 8.
+* **Earlier:** AI note classification, UI refresh, mic/AEC alignment fix, export to `.md`, model-extracted owner/due for actions, session history, first-run model download.
+
+---
+
+## 10. Testing on Windows
 
 CI (`.github/workflows/windows.yml`) runs `tsc`, `vitest` and `cargo check` on `windows-latest` for every push and PR. Running it manually (*Actions > windows > Run workflow*) also builds the installer and attaches it as the `syntari-windows` artifact.
 
