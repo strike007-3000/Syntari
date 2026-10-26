@@ -256,6 +256,14 @@ pub fn run() {
                 // run at normal process exit; skip them. shortcut: revisit when Foundry fixes its teardown.
                 #[cfg(unix)]
                 unsafe { libc::_exit(0) }
+                #[cfg(windows)]
+                unsafe {
+                    extern "system" {
+                        fn GetCurrentProcess() -> *mut core::ffi::c_void;
+                        fn TerminateProcess(h: *mut core::ffi::c_void, code: u32) -> i32;
+                    }
+                    TerminateProcess(GetCurrentProcess(), 0); // skips DLL/static teardown, like _exit
+                }
             }
         });
 }
