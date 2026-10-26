@@ -123,7 +123,7 @@ impl FoundryEngine {
 
         // Auto-detect native library location if not provided in environment
         if let Ok(lib_dir) = std::env::var("FOUNDRY_LOCAL_LIB_DIR") {
-            let lib_path = PathBuf::from(lib_dir).join("libfoundry_local.dylib");
+            let lib_path = PathBuf::from(lib_dir).join(format!("{}foundry_local{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX));
             if lib_path.exists() {
                 config = config.library_path(lib_path.to_string_lossy());
             }

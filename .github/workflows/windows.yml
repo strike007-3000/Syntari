@@ -1,0 +1,28 @@
+name: windows
+on:
+  push: { branches: [main] }
+  pull_request:
+  workflow_dispatch: # manual run also builds the installer and uploads it as an artifact
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: src-tauri }
+      - run: choco install nasm -y --no-progress && echo "C:\Program Files\NASM" >> $env:GITHUB_PATH # SQLCipher's vendored OpenSSL
+      - run: npm ci
+      - run: npm run tsc
+      - run: npm test
+      - run: cargo check
+        working-directory: src-tauri
+      - if: github.event_name == 'workflow_dispatch'
+        run: npm run tauri build
+      - if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: syntari-windows
+          path: src-tauri/target/release/bundle/**/*.exe
