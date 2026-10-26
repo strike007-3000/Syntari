@@ -20,8 +20,25 @@ jobs:
       - run: npm run build
       - run: cargo check
         working-directory: src-tauri
+      - name: Stage Foundry runtime DLLs for the installer (MIT; see src-tauri/licenses)
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          # The SDK's build.rs downloads foundry_local.dll + ONNX Runtime/GenAI into its OUT_DIR.
+          $dll = Get-ChildItem src-tauri/target -Recurse -Filter foundry_local.dll | Select-Object -First 1
+          if (-not $dll) { throw "foundry_local.dll not found in build output" }
+          New-Item -ItemType Directory -Force src-tauri/native | Out-Null
+          Copy-Item "$($dll.DirectoryName)/*.dll" src-tauri/native/
+          Get-ChildItem src-tauri/native
       - if: github.event_name == 'workflow_dispatch'
-        run: npm run tauri build
+        run: npm run tauri build -- --config src-tauri/tauri.windows-bundle.conf.json
+      - name: Verify the installer contains the runtime
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
+          $list = 7z l $exe.FullName | Out-String
+          if ($list -notmatch "foundry_local.dll") { Write-Host $list; throw "foundry_local.dll missing from installer" }
       - if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:

@@ -154,7 +154,7 @@ Models are NOT in the repo or the bundle; they live in the app data dir (see Mod
   brew tap microsoft/foundrylocal
   brew install foundrylocal
   ```
-* **Windows:** no Foundry install needed; the SDK downloads its native runtime (including WinML) at build time. Instead install: Visual Studio Build Tools (C++ workload), [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/) (preinstalled on Windows 11), [Strawberry Perl](https://strawberryperl.com/) and [NASM](https://www.nasm.us/) on `PATH` (SQLCipher's vendored OpenSSL needs both), and Rust's `stable-x86_64-pc-windows-msvc` toolchain.
+* **Windows:** no Foundry install needed; the SDK downloads its native runtime (including WinML) at build time, and the installer bundles it (`src-tauri/tauri.windows-bundle.conf.json`, staged by CI; for a local installer copy the `*.dll` files next to `foundry_local.dll` in `src-tauri/target/**/out` into `src-tauri/native/` and run `npm run tauri build -- --config src-tauri/tauri.windows-bundle.conf.json`). Instead install: Visual Studio Build Tools (C++ workload), [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/) (preinstalled on Windows 11), [Strawberry Perl](https://strawberryperl.com/) and [NASM](https://www.nasm.us/) on `PATH` (SQLCipher's vendored OpenSSL needs both), and Rust's `stable-x86_64-pc-windows-msvc` toolchain.
 
 ### Models
 

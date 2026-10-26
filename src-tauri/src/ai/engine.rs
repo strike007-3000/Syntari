@@ -142,7 +142,7 @@ impl FoundryEngine {
         }
 
         let manager = FoundryLocalManager::create(config)
-            .map_err(|e| format!("Failed to create FoundryLocalManager: {e}"))?;
+            .map_err(|e| format!("Foundry runtime failed to load (missing or damaged install; reinstall Syntari): {e}"))?;
 
         let catalog = manager.catalog();
 
