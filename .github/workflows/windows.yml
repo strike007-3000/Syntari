@@ -1,0 +1,46 @@
+name: windows
+on:
+  push: { branches: [main] }
+  pull_request:
+  workflow_dispatch: # manual run also builds the installer and uploads it as an artifact
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: src-tauri }
+      - run: choco install nasm -y --no-progress && echo "C:\Program Files\NASM" >> $env:GITHUB_PATH # SQLCipher's vendored OpenSSL
+      - run: npm ci
+      - run: npm run tsc
+      - run: npm test
+      - run: npm run build
+      - run: cargo check
+        working-directory: src-tauri
+      - name: Stage Foundry runtime DLLs for the installer (MIT; see src-tauri/licenses)
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          # The SDK's build.rs downloads foundry_local.dll + ONNX Runtime/GenAI into its OUT_DIR.
+          $dll = Get-ChildItem src-tauri/target -Recurse -Filter foundry_local.dll | Select-Object -First 1
+          if (-not $dll) { throw "foundry_local.dll not found in build output" }
+          New-Item -ItemType Directory -Force src-tauri/native | Out-Null
+          Copy-Item "$($dll.DirectoryName)/*.dll" src-tauri/native/
+          Get-ChildItem src-tauri/native
+      - if: github.event_name == 'workflow_dispatch'
+        run: npm run tauri build -- --config src-tauri/tauri.windows-bundle.conf.json
+      - name: Verify the installer contains the runtime
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
+          $list = 7z l $exe.FullName | Out-String
+          if ($list -notmatch "foundry_local.dll") { Write-Host $list; throw "foundry_local.dll missing from installer" }
+      - if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: syntari-windows
+          path: src-tauri/target/release/bundle/**/*.exe

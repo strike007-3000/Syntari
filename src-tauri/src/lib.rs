@@ -49,12 +49,14 @@ fn start_syntari_session(app: AppHandle, st: State<'_, AppState>) -> Result<(), 
 /// Writes the notes to ~/Downloads and reveals the file in Finder.
 #[tauri::command]
 fn export_markdown(content: String) -> Result<String, String> {
-    let home = std::env::var("HOME").map_err(|e| e.to_string())?;
+    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).map_err(|e| e.to_string())?;
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_secs();
     let path = std::path::Path::new(&home).join("Downloads").join(format!("syntari-notes-{secs}.md"));
     std::fs::write(&path, content).map_err(|e| e.to_string())?;
     #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("open").arg("-R").arg(&path).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn();
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -103,6 +105,12 @@ fn open_system_settings(pane: Option<String>) {
             _ => "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
         };
         let _ = std::process::Command::new("open").arg(url).spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // No screen-capture permission on Windows; only the mic toggle matters.
+        let _ = pane;
+        let _ = std::process::Command::new("cmd").args(["/C", "start", "ms-settings:privacy-microphone"]).spawn();
     }
 }
 
@@ -248,6 +256,14 @@ pub fn run() {
                 // run at normal process exit; skip them. shortcut: revisit when Foundry fixes its teardown.
                 #[cfg(unix)]
                 unsafe { libc::_exit(0) }
+                #[cfg(windows)]
+                unsafe {
+                    extern "system" {
+                        fn GetCurrentProcess() -> *mut core::ffi::c_void;
+                        fn TerminateProcess(h: *mut core::ffi::c_void, code: u32) -> i32;
+                    }
+                    TerminateProcess(GetCurrentProcess(), 0); // skips DLL/static teardown, like _exit
+                }
             }
         });
 }

@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "resources": {
+      "native/*": "./",
+      "licenses/*": "licenses/"
+    }
+  }
+}
