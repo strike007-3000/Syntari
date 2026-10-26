@@ -28,6 +28,7 @@ interface State {
   stop: () => Promise<void>;
   addLine: (line: string, explicitTs?: number) => Promise<void>;
   toggleDone: (id: string) => void;
+  setKind: (id: string, kind: Note["kind"]) => void;
   applyExpansion: (e: NoteExpandedPayload) => void;
   failExpansion: (id: string) => void;
   pushChunk: (c: TranscriptChunk) => void;
@@ -46,6 +47,8 @@ let insightInterval: ReturnType<typeof setInterval> | null = null;
 let lastInsightMs = 0;
 // Dedup set so repeated extractions don't push duplicate notes.
 const seenInsightTexts = new Set<string>();
+// Notes whose category the user typed (dec:/act:/risk:); the model must not re-bucket these.
+const typedKinds = new Set<string>();
 const getDb = () => {
   if (!db) {
     db = invoke<string>("get_db_key").then((key) => {
@@ -142,11 +145,12 @@ export const useStore = create<State>((set, get) => ({
       kind: p.kind,
       raw: p.text,
       ts,
-      status: running ? "pending" : "completed",
+      status: "pending",
       owner: p.owner,
       due: p.due,
     };
 
+    if (/^(dec|act|risk):/i.test(line.trim())) typedKinds.add(note.id);
     set((s) => ({ notes: [...s.notes, note] }));
 
     persist((d) =>
@@ -156,21 +160,25 @@ export const useStore = create<State>((set, get) => ({
       ),
     );
 
-    if (running) {
-      invoke<NoteExpandedPayload>("expand_note", {
-        id: note.id,
-        kind: note.kind,
-        text: note.raw,
-        tsMs: ts,
+    invoke<NoteExpandedPayload>("expand_note", {
+      id: note.id,
+      kind: note.kind,
+      text: note.raw,
+      tsMs: ts,
+    })
+      .then((res) => {
+        if (res) get().applyExpansion({ ...res, id: note.id });
       })
-        .then((res) => {
-          if (res) get().applyExpansion({ ...res, id: note.id });
-        })
-        .catch((err) => {
-          console.error("expand_note failed:", err);
-          get().failExpansion(note.id);
-        });
-    }
+      .catch((err) => {
+        console.error("expand_note failed:", err);
+        get().failExpansion(note.id);
+      });
+  },
+
+  setKind(id, kind) {
+    typedKinds.add(id); // a manual choice beats a late model answer
+    set((s) => ({ notes: s.notes.map((n) => (n.id === id ? { ...n, kind } : n)) }));
+    persist((d) => d.execute("UPDATE notes SET kind=? WHERE id=?", [kind, id]));
   },
 
   toggleDone(id) {
@@ -185,6 +193,9 @@ export const useStore = create<State>((set, get) => ({
         n.id === e.id
           ? {
               ...n,
+              kind: e.category && !typedKinds.has(n.id) ? e.category : n.kind,
+              owner: n.owner ?? e.owner ?? undefined,
+              due: n.due ?? e.due ?? undefined,
               status: "completed",
               expanded: e.enhanced_text || n.raw,
               citation: e.citation_quote
@@ -202,8 +213,8 @@ export const useStore = create<State>((set, get) => ({
 
     persist((d) =>
       d.execute(
-        "UPDATE notes SET expanded=?, citation_quote=?, citation_chunks=? WHERE id=?",
-        [e.enhanced_text, e.citation_quote ?? null, "[]", e.id],
+        "UPDATE notes SET expanded=?, citation_quote=?, citation_chunks=?, kind=COALESCE(?, kind), owner=COALESCE(owner, ?), due=COALESCE(due, ?) WHERE id=?",
+        [e.enhanced_text, e.citation_quote ?? null, "[]", typedKinds.has(e.id) ? null : e.category ?? null, e.owner ?? null, e.due ?? null, e.id],
       ),
     );
   },

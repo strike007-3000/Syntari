@@ -31,13 +31,13 @@ export default function ShorthandPad() {
 
   return (
     <section className="flex h-full flex-col bg-ink-950" aria-label="Shorthand scratchpad">
-      <div className="border-b border-gray-800 p-3 text-xs font-semibold uppercase tracking-wider text-gray-400">
+      <div className="border-b border-ink-700 p-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
         Shorthand Scratchpad
       </div>
 
       <div className="flex-1 space-y-2 overflow-y-auto p-3 font-mono text-xs">
         {notes.length === 0 ? (
-          <div className="p-2 text-gray-600 italic">No notes recorded yet.</div>
+          <div className="p-2 text-slate-500">Type a note and press Enter. It's filed automatically.</div>
         ) : (
           notes.map((n) => {
             const isCompleted = n.status === "completed" || !!n.expanded;
@@ -45,8 +45,8 @@ export default function ShorthandPad() {
             return (
               <div key={n.id} className="flex items-start justify-between gap-2 rounded bg-ink-900/60 p-2">
                 <div className="flex-1 break-words">
-                  <span className="text-gray-500">[{fmtClock(n.ts)}]</span>{" "}
-                  <span className="text-gray-200">{n.raw}</span>
+                  <span className="text-slate-500">[{fmtClock(n.ts)}]</span>{" "}
+                  <span className="text-slate-200">{n.raw}</span>
                   {n.expanded && n.expanded !== n.raw && (
                     <div className="mt-1 text-[11px] text-slate-300 italic">
                       ↳ {n.expanded}
@@ -63,10 +63,10 @@ export default function ShorthandPad() {
                   }`}
                 >
                   {isCompleted
-                    ? "[Status: Enhanced]"
+                    ? "Enhanced"
                     : isFailed
-                    ? "[Status: Failed]"
-                    : "[Status: Pending]"}
+                    ? "Failed"
+                    : "Pending"}
                 </span>
               </div>
             );
@@ -75,13 +75,13 @@ export default function ShorthandPad() {
         <div ref={listEndRef} />
       </div>
 
-      <div className="border-t border-gray-800 bg-ink-900/90 p-2">
+      <div className="border-t border-ink-700 bg-ink-900 p-2">
         <textarea
           id="shorthand-input"
           autoFocus
-          rows={3}
+          rows={2}
           value={text}
-          placeholder={"Jot raw notes here during the call...\n• dec: pricing set to $45\n• act: Dana staging fix Fri\n• risk: SOC2 audit delay"}
+          placeholder="Type notes as you listen…"
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -89,9 +89,9 @@ export default function ShorthandPad() {
               handleSubmit();
             }
           }}
-          className="w-full resize-none bg-transparent p-2 font-mono text-xs text-gray-200 placeholder-gray-600 focus:outline-none"
+          className="w-full resize-none bg-transparent p-2 font-mono text-xs text-gray-200 placeholder-slate-500 focus:outline-none"
         />
-        <div className="flex justify-between px-2 pb-1 text-[10px] text-gray-500">
+        <div className="flex justify-between px-2 pb-1 text-[10px] text-slate-500">
           <span>Press Enter to record</span>
           <span>Shift+Enter for newline</span>
         </div>
