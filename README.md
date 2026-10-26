@@ -2,6 +2,15 @@
 
 Syntari is a privacy-first, on-device desktop meeting synthesizer and contextual shorthand expander designed for software architects, engineering leads, and technical executives. Built on Tauri v2, React, and Foundry Local ONNX models, Syntari converts brief shorthand keystrokes into grounded, structured meeting records in real time—with no telemetry of its own. After a one-time model download it runs fully offline; no audio, transcripts or notes ever leave your device.
 
+
+### About the name
+
+**Syntari** is a blend:
+
+* **Synth-**: synthesis. The app takes messy inputs (live dual-track transcripts and brief human shorthand) and synthesizes them in real time into structured artifacts: Decisions, Actions, Risks.
+* **-tari**: a nod to **Tauri**, the Rust desktop framework behind the cross-platform runtime, strict CSP and sandboxing.
+* **Notary / syntax**: phonetically it suggests a digital notary (a neutral record-keeper for decisions) and the extraction of structured syntax from raw speech.
+
 ---
 
 ## 1. Why Syntari? The Idea & Problem Space
