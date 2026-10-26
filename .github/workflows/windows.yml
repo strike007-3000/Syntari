@@ -14,7 +14,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: src-tauri }
       - run: choco install nasm -y --no-progress && echo "C:\Program Files\NASM" >> $env:GITHUB_PATH # SQLCipher's vendored OpenSSL
-      - run: npm ci
+      - run: npm ci --legacy-peer-deps # vite 8 vs @vitejs/plugin-react peer range conflict
       - run: npm run tsc
       - run: npm test
       - run: cargo check
