@@ -216,6 +216,9 @@ npm run tauri dev
 * **Continue and AI context:** continuing restores notes and transcript for display and summary, but the in-memory window used for note expansion only covers audio recorded since you resumed.
 * **Old accepted suggestions:** notes accepted from AI suggestions before migration 002 have no AI flag, so they show in the left pad when reloaded.
 * **No delete:** meetings cannot be deleted from the UI.
+* **Silent save failures:** if the database cannot be opened, capture still works but saving fails with only a console error; the Meetings list will then be empty. Check the dev console if a meeting does not appear.
+* **Summary needs a stopped session:** *Generate summary* is disabled while recording or when the transcript is empty, and a summary is not produced automatically.
+* **Platform paths:** on macOS the Foundry library is loaded from fixed Homebrew paths (`ai/engine.rs`, including a pinned `0.11.0_1` Cellar path), so a different install location or version may fail to load until a fallback path matches.
 * **Not implemented:** signed/notarized release builds, upstream-pinned model hashes.
 
 
