@@ -67,3 +67,9 @@ describe("parseShorthand", () => {
     expect(result).toEqual({ kind: "decision", text: "trimmed" });
   });
 });
+
+describe("parseShorthand owner detection", () => {
+  it("treats a lowercase first word as part of the task", () => {
+    expect(parseShorthand("act: ship it")).toEqual({ kind: "action", text: "ship it", owner: undefined, due: undefined });
+  });
+});

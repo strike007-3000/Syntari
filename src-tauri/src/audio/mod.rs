@@ -205,19 +205,11 @@ pub fn start(
                     let drained: Vec<f32> = b.drain(..drain_to).collect();
                     (drained, drain_to)
                 };
+                // Drain mic by the same length as sys so the AEC reference stays sample-aligned.
                 let (mut mic, mic_new) = {
                     let mut b = cap.mic.lock().unwrap();
-                    let total = b.len();
-                    let drain_to = if total > MIN_SEGMENT {
-                        let all: Vec<f32> = b.iter().copied().collect();
-                        dsp::find_silence_gap(&all, 400)
-                            .filter(|&p| p >= MIN_SEGMENT)
-                            .unwrap_or_else(|| total.saturating_sub(OVERLAP_SAMPLES))
-                    } else {
-                        total.saturating_sub(OVERLAP_SAMPLES)
-                    };
-                    let drained: Vec<f32> = b.drain(..drain_to).collect();
-                    (drained, drain_to)
+                    let n = sys_new.min(b.len());
+                    (b.drain(..n).collect::<Vec<f32>>(), n)
                 };
 
                 if !sys.is_empty() {
@@ -228,10 +220,13 @@ pub fn start(
                 let (sys_start, mic_start) = (sys_done, mic_done);
                 sys_done += sys_new;
                 mic_done += mic_new;
+                // Echo-suppressed mic energy: bleed is cancelled to near zero, real speech survives.
+                // shortcut: threshold is a guess, tune on real hardware.
+                let mic_residual = dsp::rms(&mic);
                 let sys_active = dsp::rms(&sys) > 0.01;
                 for (speaker, pcm, begin) in [("Remote", &mut sys, sys_start), ("You", &mut mic, mic_start)] {
-                    // Skip mic when system audio is playing — AEC hasn't converged and speaker bleed passes VAD.
-                    if speaker == "You" && sys_active { continue; }
+                    // While system audio plays, keep the mic only if it still has energy after AEC + ducking.
+                    if speaker == "You" && sys_active && mic_residual < 0.005 { continue; }
                     let rms = dsp::rms(pcm);
                     let is_speech = dsp::is_speech(pcm);
                     if speaker == "Remote" && is_speech {

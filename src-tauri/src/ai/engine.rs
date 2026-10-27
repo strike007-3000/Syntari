@@ -25,6 +25,9 @@ pub struct InsightItem {
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct EnhancedResult {
+    pub category: String, // "decision" | "action" | "risk" | "discussion"
+    pub owner: Option<String>,
+    pub due: Option<String>,
     pub enhanced_text: String,
     pub raw_shorthand: String,
     pub citation_start: f64,
@@ -120,7 +123,7 @@ impl FoundryEngine {
 
         // Auto-detect native library location if not provided in environment
         if let Ok(lib_dir) = std::env::var("FOUNDRY_LOCAL_LIB_DIR") {
-            let lib_path = PathBuf::from(lib_dir).join("libfoundry_local.dylib");
+            let lib_path = PathBuf::from(lib_dir).join(format!("{}foundry_local{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX));
             if lib_path.exists() {
                 config = config.library_path(lib_path.to_string_lossy());
             }
@@ -139,7 +142,7 @@ impl FoundryEngine {
         }
 
         let manager = FoundryLocalManager::create(config)
-            .map_err(|e| format!("Failed to create FoundryLocalManager: {e}"))?;
+            .map_err(|e| format!("Foundry runtime failed to load (missing or damaged install; reinstall Syntari): {e}"))?;
 
         let catalog = manager.catalog();
 
@@ -275,6 +278,9 @@ impl FoundryEngine {
             None => {
                 // Graceful fallback when model is not yet loaded: preserve raw shorthand
                 return Ok(EnhancedResult {
+                    category: "discussion".into(),
+                    owner: None,
+                    due: None,
                     enhanced_text: raw_shorthand.to_string(),
                     raw_shorthand: raw_shorthand.to_string(),
                     citation_start: keystroke_time,
@@ -293,25 +299,30 @@ impl FoundryEngine {
             .filter(|c| c.end >= t_min && c.start <= t_max)
             .collect();
 
-        // If no relevant conversation occurred in this window, preserve raw shorthand
-        if context_chunks.is_empty() {
-            return Ok(EnhancedResult {
-                enhanced_text: raw_shorthand.to_string(),
-                raw_shorthand: raw_shorthand.to_string(),
-                citation_start: keystroke_time,
-                citation_end: keystroke_time,
-                citation_quote: "No temporal transcript context found; preserved original.".into(),
-            });
-        }
-
         // 2. Format context snippet
         let mut context_text = String::new();
         for c in &context_chunks {
             context_text.push_str(&format!("[{:.1}s - {:.1}s] {}: {}\n", c.start, c.end, c.speaker, c.text));
         }
 
+        if context_text.is_empty() {
+            context_text.push_str("(no transcript context)\n");
+        }
+
         let system_prompt = "You are Syntari, an on-device meeting note assistant.\n\
-            Expand the user's shorthand into one precise sentence using ONLY the provided transcript.\n\
+            First classify the note, then expand it into one precise sentence using ONLY the provided transcript.\n\
+            Reply in exactly this format:\n\
+            CATEGORY: decision | action | risk | discussion\n\
+            Category definitions:\n\
+            - decision: something already agreed or chosen (\"We agreed to ship Friday\", \"Going with Postgres\").\n\
+            - action: a task someone must do, usually with a person or deadline (\"Dana will send the contract\").\n\
+            - risk: a problem, delay, cost, or blocker that could hurt the plan.\n\
+            - discussion: a topic talked about, an idea, or a tentative suggestion (\"Maybe we should switch vendors\") with no commitment.\n\
+            When unsure, choose discussion.\n\
+            NOTE: <one sentence>\n\
+            OWNER: <person responsible, or none>\n\
+            DUE: <deadline as stated, or none>\n\
+            OWNER and DUE only apply to actions; write none otherwise.\n\
             STRICT RULES:\n\
             1. Every word in your output must be directly supported by a quote from the transcript.\n\
             2. Never add numbers, percentages, names, or dates not explicitly stated in the transcript.\n\
@@ -319,7 +330,7 @@ impl FoundryEngine {
             4. One sentence maximum. No preamble, no 'Here is', no 'As discussed'.";
 
         let user_prompt = format!(
-            "CONVERSATION CONTEXT:\n{}\n\nUSER SHORTHAND NOTE:\n\"{}\"\n\nEXPANDED FACTUAL NOTE:",
+            "CONVERSATION CONTEXT:\n{}\n\nUSER SHORTHAND NOTE:\n\"{}\"\n\nCATEGORY:",
             context_text, raw_shorthand
         );
 
@@ -347,24 +358,46 @@ impl FoundryEngine {
             }
         }
 
-        eprintln!(
-            "[Syntari Inference] raw=\"{}\" -> enhanced=\"{}\"",
-            raw_shorthand,
-            enhanced_text.trim()
-        );
-
-        if enhanced_text.trim().is_empty() {
-            enhanced_text = raw_shorthand.to_string();
+        // The model may or may not repeat "CATEGORY:", so take the first category word on any line before NOTE.
+        let mut category = "discussion".to_string();
+        let mut note = String::new();
+        let (mut owner, mut due) = (None, None);
+        let mut found = false;
+        for line in enhanced_text.lines() {
+            let l = line.trim();
+            let field = |v: &str| Some(v.trim().to_string()).filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("none"));
+            if let Some(n) = l.strip_prefix("NOTE:") {
+                note = n.trim().to_string();
+            } else if let Some(v) = l.strip_prefix("OWNER:") {
+                owner = field(v);
+            } else if let Some(v) = l.strip_prefix("DUE:") {
+                due = field(v);
+            } else if !found {
+                let lower = l.to_lowercase();
+                if let Some(c) = ["decision", "action", "risk", "discussion"].iter().find(|c| lower.contains(*c)) {
+                    category = c.to_string();
+                    found = true;
+                }
+            }
         }
+        if note.is_empty() {
+            note = raw_shorthand.to_string();
+        }
+        eprintln!("[Syntari Inference] raw=\"{raw_shorthand}\" -> {category}: \"{note}\"");
 
-        let first_chunk = context_chunks.first().unwrap();
-        let last_chunk = context_chunks.last().unwrap();
+        let (citation_start, citation_end) = match (context_chunks.first(), context_chunks.last()) {
+            (Some(f), Some(l)) => (f.start, l.end),
+            _ => (keystroke_time, keystroke_time),
+        };
 
         Ok(EnhancedResult {
-            enhanced_text: enhanced_text.trim().to_string(),
+            category,
+            owner,
+            due,
+            enhanced_text: note,
             raw_shorthand: raw_shorthand.to_string(),
-            citation_start: first_chunk.start,
-            citation_end: last_chunk.end,
+            citation_start,
+            citation_end,
             citation_quote: context_chunks.iter().map(|c| c.text.as_str()).collect::<Vec<_>>().join(" "),
         })
     }

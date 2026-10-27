@@ -35,6 +35,9 @@ export interface Note {
 
 export interface NoteExpandedPayload {
   id: string;
+  category?: NoteKind;
+  owner?: string | null;
+  due?: string | null;
   enhanced_text: string;
   raw_shorthand: string;
   citation_start: number;
@@ -55,8 +58,11 @@ export function parseShorthand(line: string): { kind: NoteKind; text: string; ow
   if (p === "dec") return { kind: "decision", text: body };
   if (p === "risk") return { kind: "risk", text: body };
   // act: <owner> <task> <due>
-  const [owner, ...rest] = body.split(/\s+/);
-  let task = rest.join(" ");
+  const [first, ...more] = body.split(/\s+/);
+  // The first word is an owner only if it's a capitalised name followed by a task: "act: ship it" has no owner.
+  const hasOwner = /^[A-Z]/.test(first) && more.length > 0;
+  const owner = hasOwner ? first : undefined;
+  let task = (hasOwner ? more : [first, ...more]).join(" ");
   let due: string | undefined;
   const d = /\s+(?:by|due|on)?\s*((?:\d{4}-\d{2}-\d{2})|(?:\d{1,2}\/\d{1,2})|(?:mon|tue|wed|thu|fri|sat|sun)\w*|tomorrow|eod|eow)$/i.exec(task);
   if (d) {

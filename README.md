@@ -2,6 +2,15 @@
 
 Syntari is a privacy-first, on-device desktop meeting synthesizer and contextual shorthand expander designed for software architects, engineering leads, and technical executives. Built on Tauri v2, React, and Foundry Local ONNX models, Syntari converts brief shorthand keystrokes into grounded, structured meeting records in real time—with no telemetry of its own. After a one-time model download it runs fully offline; no audio, transcripts or notes ever leave your device.
 
+
+### About the name
+
+**Syntari** is a blend:
+
+* **Synth-**: synthesis. The app takes messy inputs (live dual-track transcripts and brief human shorthand) and synthesizes them in real time into structured artifacts: Decisions, Actions, Risks.
+* **-tari**: a nod to **Tauri**, the Rust desktop framework behind the cross-platform runtime, strict CSP and sandboxing.
+* **Notary / syntax**: phonetically it suggests a digital notary (a neutral record-keeper for decisions) and the extraction of structured syntax from raw speech.
+
 ---
 
 ## 1. Why Syntari? The Idea & Problem Space
@@ -22,7 +31,7 @@ Most generative AI summary tools output generic, unstructured walls of text. The
 
 Syntari pairs human intentionality with local AI:
 
-1. **The Human Directs Intent:** The user types quick shorthand tags during the meeting (e.g., `dec: pricing $45 Nov`, `act: Sarah Deploy fix Fri`, `risk: SOC2 latency`).
+1. **The Human Directs Intent:** The user types quick notes during the meeting (e.g., `pricing set to $45 from November`). The local model files each note as a decision, action, risk, or discussion point. Optional shorthand tags (`dec:`, `act:`, `risk:`) skip the model and choose the category directly.
 2. **The System Captures Context:** Syntari records audio continuously in volatile RAM buffers.
 3. **The Local AI Expands Factually:** Using a focused lookback slice ($[T - 45\text{s}, T + 10\text{s}]$ relative to keystroke time), an on-device language model enriches the shorthand note with the exact dialogue spoken in that window.
 4. **Zero-Hallucination Fallback:** If the shorthand topic was not explicitly discussed in the audio slice, the model retains the user's raw note rather than fabricating details.
@@ -42,45 +51,62 @@ Syntari pairs human intentionality with local AI:
 ## 3. System Architecture
 
 ```text
-┌────────────────────────────────────────────────────────────────────────┐
-│                               Frontend                                 │
-│  React 18 + TypeScript + Tailwind CSS + Zustand (Zero-Egress CSP)   │
-│                                                                        │
-│  ┌───────────────────────┐  ┌────────────────────┐  ┌───────────────┐  │
-│  │ Shorthand Scratchpad  │  │  Notes View        │  │  Transcript   │  │
-│  │ (Raw Tagged Notes)    │  │  (Schema Cards)    │  │  (Audio Log)  │  │
-│  └───────────┬───────────┘  └─────────▲──────────┘  └───────▲───────┘  │
-└──────────────┼────────────────────────┼─────────────────────┼──────────┘
-               │ invoke("expand_note")   │ "note-expanded"     │ "stt-chunk"
-               ▼                        │                     │
-┌────────────────────────────────────────────────────────────────────────┐
-│                        Tauri v2 Core (Rust)                            │
-│                                                                        │
-│  ┌───────────────────────────────────┐  ┌───────────────────────────┐  │
-│  │           Audio Engine            │  │     Foundry AI Engine     │  │
-│  │ ───────────────────────────────── │  │ ───────────────────────── │  │
-│  │ • Mic (cpal)                      │  │ • whisper-small (ONNX)     │  │
-│  │ • System Loopback (ScreenCapture) │  │   In-memory STT streaming │  │
-│  │ • 16 kHz Downmix & Resampler      │  │ • phi-4-mini (WebGPU)   │  │
-│  │ • NLMS Echo Canceller (2048 taps) │  │   Contextual Expansion    │  │
-│  │ • Frame-Sliced Ducking (-18 dB)   │  │ • Anti-hallucination      │  │
-│  │ • Circular In-Memory RAM Buffer   │  │   prompt templates        │  │
-│  └───────────────────────────────────┘  └───────────────────────────┘  │
-│                                                                        │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │ Local Persistence: SQLCipher (AES-256) via OS Credential Vault   │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-└────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│           FRONTEND: React 18 + TypeScript + Tailwind 3 + Zustand           │
+│                                                                            │
+│                    Zero-egress CSP (default-src 'self')                    │
+│                                                                            │
+│   ┌────────────────────┐  ┌────────────────────┐  ┌────────────────────┐   │
+│   │   Shorthand Pad    │  │  Notes Dashboard   │  │ Transcript Drawer  │   │
+│   │ (raw tagged notes) │  │   (schema cards)   │  │    (audio log)     │   │
+│   └────────────────────┘  └────────────────────┘  └────────────────────┘   │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+               │                       ▲                       ▲
+               │ invoke                │ event                 │ event
+               │ expand_note           │ note-expanded         │ stt-chunk
+               ▼                       │                       │
+┌────────────────────────────────────────────────────────────────────────────┐
+│                            TAURI v2 CORE (Rust)                            │
+│                                                                            │
+│ ┌──────────────────────────────────┐  ┌──────────────────────────────────┐ │
+│ │           AUDIO ENGINE           │  │        FOUNDRY AI ENGINE         │ │
+│ │──────────────────────────────────│  │──────────────────────────────────│ │
+│ │• Mic: cpal (both OS)             │  │• whisper-small (ONNX)            │ │
+│ │• System audio:                   │  │    chunked speech-to-text        │ │
+│ │    macOS: ScreenCaptureKit       │  │• phi-4-mini                      │ │
+│ │    Windows: WASAPI loopback      │  │    classify / expand / insights  │ │
+│ │• 16 kHz downmix + resampler      │  │• Anti-hallucination prompts      │ │
+│ │• NLMS echo canceller             │  │• Models: first-run download,     │ │
+│ │• Frame-sliced ducking (-18 dB)   │  │    SHA-256 verified              │ │
+│ │• In-memory RAM ring buffer       │  │• MIT runtime bundled in app      │ │
+│ └──────────────────────────────────┘  └──────────────────────────────────┘ │
+│                                                                            │
+│       ┌────────────────────────────────────────────────────────────┐       │
+│       │      SQLCipher (AES-256), key in OS credential vault       │       │
+│       └────────────────────────────────────────────────────────────┘       │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 4. Shorthand Syntax Reference
+## 4. Note Classification & Shorthand
 
-Syntari automatically routes and structures notes when prefixed with shorthand tokens:
+Type plain notes; no syntax is required. In a single model call, phi-4-mini classifies each note (`decision`, `action`, `risk`, or `discussion`) and expands it from the surrounding transcript. For actions it also extracts the owner and due date when stated. A note appears immediately as Discussion and moves to its card when the model answers; if the answer is missing or unrecognised it stays in Discussion. Every note has a hover *Move to* menu to correct the category, and a manual choice is never overwritten.
+
+Optional shorthand prefixes skip classification and set the category instantly (case-insensitive):
 
 | Prefix | Schema Category | Example Input | Expanded Output |
 | :--- | :--- | :--- | :--- |
+| `dec:` | Decisions | `dec: pricing $45 Nov` | Enterprise pricing tier set to $45 starting November. |
+| `act:` | Action Items | `act: Sarah API audit Fri` | Sarah to complete the API security audit before Friday's release. |
+| `risk:` | Risks & Blockers | `risk: DB lockup on migrate` | Risk identified regarding potential database lockup during table migration. |
+| *(none)* | Model decides | `Dana will send the contract by Friday` | Filed under Action Items with owner Dana, due Friday. |
+
+For `act:`, the first word is the owner only if it is capitalised and followed by a task (`act: ship it` has no owner). A trailing weekday, date, `tomorrow`, `eod` or `eow` becomes the due date.
+
+--- | :--- | :--- | :--- |
 | `dec:` | Decisions | `dec: pricing $45 Nov` | Enterprise pricing tier set to $45 starting November. |
 | `act:` | Action Items | `act: Sarah API audit Fri` | Sarah to complete the API security audit before Friday's release. |
 | `risk:` | Risks & Blockers | `risk: DB lockup on migrate` | Risk identified regarding potential database lockup during table migration. |
@@ -120,12 +146,18 @@ syntari/
 │   │   ├── audio/
 │   │   │   ├── mod.rs                 # Audio pipeline coordinator & ring buffers
 │   │   │   ├── dsp.rs                 # Resampling, NLMS filter, frame ducking
-│   │   │   └── macos_sc_tap.rs        # Native ScreenCaptureKit loopback tap
+│   │   │   ├── macos_sc_tap.rs        # Native ScreenCaptureKit loopback tap (macOS)
+│   │   │   ├── loopback_macos.rs      # Virtual-device fallback (macOS)
+│   │   │   └── loopback_windows.rs    # WASAPI loopback via cpal (Windows)
 │   │   ├── lib.rs                     # Tauri IPC command handlers
 │   │   └── main.rs                    # Application entry point
 │   ├── migrations/001_init.sql        # Sessions, notes, transcript schema
 │   ├── tauri.conf.json                # Tauri v2 bundle, CSP, and window config
+│   ├── tauri.windows-bundle.conf.json # Extra resources for the Windows installer (runtime DLLs, notices)
+│   ├── licenses/                      # MIT license + third-party notices for the bundled Foundry runtime
+│   ├── icons/                         # App icons (placeholder; regenerate with `tauri icon`)
 │   └── Cargo.toml                     # Rust dependencies & platform targets
+├── .github/workflows/windows.yml      # Windows CI: tsc, vitest, frontend build, cargo check; manual installer build
 └── scripts/check-egress.sh            # Lists the running app's network sockets
 
 Models are NOT in the repo or the bundle; they live in the app data dir (see Models).
@@ -137,17 +169,18 @@ Models are NOT in the repo or the bundle; they live in the app data dir (see Mod
 
 ### Prerequisites
 
-* macOS 14+ (Apple Silicon recommended) or Windows 11
+* macOS 14+ (Apple Silicon recommended) or Windows 11 (x64 or ARM64)
 * Node.js 18+ and Rust 1.75+
-* Foundry CLI:
+* **macOS:** Foundry CLI (provides the native runtime Syntari loads):
   ```bash
   brew tap microsoft/foundrylocal
   brew install foundrylocal
   ```
+* **Windows:** no Foundry install needed; the SDK downloads its native runtime (including WinML) at build time, and the installer bundles it (`src-tauri/tauri.windows-bundle.conf.json`, staged by CI; for a local installer copy the `*.dll` files next to `foundry_local.dll` in `src-tauri/target/**/out` into `src-tauri/native/` and run `npm run tauri build -- --config src-tauri/tauri.windows-bundle.conf.json`). Instead install: Visual Studio Build Tools (C++ workload), [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/) (preinstalled on Windows 11), [Strawberry Perl](https://strawberryperl.com/) and [NASM](https://www.nasm.us/) on `PATH` (SQLCipher's vendored OpenSSL needs both), and Rust's `stable-x86_64-pc-windows-msvc` toolchain.
 
 ### Models
 
-Models are not bundled or committed. On first launch Syntari downloads whisper-small and phi-4-mini once into the app data dir (`~/Library/Application Support/com.syntari.app/models` on macOS). Defaults: whisper-small (~440 MB, speech) and phi-4-mini (~3.7 GB, expansion/insights); expect a ~4 GB first download and ~4 GB RAM while running. This is the only network access Syntari itself performs.
+Models are not bundled or committed. On first launch Syntari downloads whisper-small and phi-4-mini once into the app data dir (`~/Library/Application Support/com.syntari.app/models` on macOS, `%APPDATA%\\com.syntari.app\\models` on Windows). Defaults: whisper-small (~440 MB, speech) and phi-4-mini (~3.7 GB, expansion/insights); expect a ~4 GB first download and ~4 GB RAM while running. This is the only network access Syntari itself performs.
 
 * **Air-gapped / manual install:** set `SYNTARI_MODELS_DIR` to a folder pre-populated with models (e.g. `foundry model download ... --output <dir>` on a connected machine, then copy it over).
 * **Updating models:** delete the model folder and relaunch (re-downloads), or replace the files in `SYNTARI_MODELS_DIR`.
@@ -155,10 +188,11 @@ Models are not bundled or committed. On first launch Syntari downloads whisper-s
 
 ### Using the App
 
-* **Start / Stop** a session from the header; the left pad takes your shorthand, the middle panel structures it, the right drawer shows the live transcript.
+* **Start / Stop** a session from the header; the left pad takes your notes, the middle panel structures it, the right drawer shows the live transcript.
 * **AI suggestions:** every 30 s the local model proposes decisions/actions/risks from the transcript. They appear only in the Notes panel (amber) until you **Accept** or **Dismiss** them.
 * **History:** when no session is running, the header's *History* dropdown reloads any past session (notes + transcript).
-* **Export:** *Copy Markdown* copies the current notes to the clipboard.
+* **Export:** *Copy Markdown* copies the current notes to the clipboard; *Export .md* saves them to `Downloads` in your home folder (`%USERPROFILE%` on Windows) and reveals the file in Finder / Explorer.
+* **Moving notes:** hover a note and use its dropdown to move it to another card.
 * **Status pill:** shows one-time model download progress, model errors, or "Keychain unavailable: notes will not be saved".
 
 ### Running Locally
@@ -182,7 +216,56 @@ npm run tauri dev
 * **Keychain prompt on every dev rebuild:** unsigned dev builds are a new app to macOS each time; enter your login password and choose *Always Allow*. Denying means no persistence.
 * **First launch is slow:** ~4 GB of models download once (progress in the header). Transcription is unavailable until it finishes.
 * **Transcript accuracy:** speech is cut on silence gaps (3 s minimum, 12 s maximum) and transcribed by whisper-small. Larger models (`whisper-medium`, `whisper-large-v3-turbo`) are in the Foundry catalog but not wired up. Non-speech tags like `(soft music)` are discarded.
-* **You-track gaps:** the mic track is skipped while system audio is playing (echo canceller not converged), so speech during remote audio is not transcribed.
-* **Exit behaviour:** Foundry's native runtime aborts in a C++ destructor on normal process exit (macOS "quit unexpectedly" dialog). Syntari stops the session and then exits with `_exit(0)` to skip it.
-* **Foundry runtime is closed source:** it may make its own telemetry/metadata requests; verify with `scripts/check-egress.sh` or a network monitor. The native library is currently located via Homebrew paths (`brew install foundrylocal`); bundling it for distribution is not done and needs a license review.
-* **Not implemented:** file export (only clipboard), signed/notarized release builds, upstream-pinned model hashes.
+* **You-track during remote audio:** the mic track is kept while system audio plays only if its energy after echo cancellation exceeds 0.005 RMS (`audio/mod.rs`). The threshold is untuned; speaker bleed may be transcribed as "You" or quiet speech dropped. Use headphones for best results.
+* **Exit behaviour:** Foundry's native runtime aborts in a C++ destructor on normal process exit (macOS "quit unexpectedly" dialog). Syntari stops the session and then exits with `_exit(0)` (macOS/Linux) or `TerminateProcess` (Windows) to skip it.
+* **Foundry runtime is closed source:** it may make its own telemetry/metadata requests; verify with `scripts/check-egress.sh` or a network monitor.
+* **Foundry licensing (reviewed, not legal advice):** the `foundry-local-sdk` crate and the `Microsoft.AI.Foundry.Local.Runtime` NuGet package (the native `foundry_local` library plus ONNX Runtime / GenAI, which the build downloads for Windows and macOS) are **MIT**, so bundling them in an installer is permitted if you ship the MIT notice and `ThirdPartyNotices` from the package. The **Foundry Local CLI** installed via `brew`/`winget` is under separate Microsoft terms that forbid combining it with your application for others to use, so do not redistribute the CLI or its `libfoundry_local.dylib`. Model weights are fetched from the Foundry catalog at first run, not bundled; whisper-small and phi-4-mini are MIT-licensed upstream, but confirm the catalog entries' terms before bundling weights. The macOS build currently loads the Homebrew copy (see `ai/engine.rs`); for distribution, drop that lookup and use the SDK's own downloaded runtime.
+* **Classification accuracy:** phi-4-mini is a small model; ambiguous or tentative notes may be mis-filed. Use the *Move to* menu. Export has no save dialog (always `~/Downloads`).
+* **Windows is new and untested on hardware:** it compiles in CI but needs a real run. Differences from macOS: system audio uses WASAPI loopback on the default output device (no permission prompt; capture follows the device's mix format, usually 48 kHz stereo); only the microphone privacy toggle matters (*Settings > Privacy > Microphone*); on exit the process is ended with `TerminateProcess` (the Windows counterpart of `_exit`) to skip Foundry's teardown, so confirm there is no crash dialog on quit; the icons in `src-tauri/icons/` are a generic placeholder; replace them with `npm run tauri icon <1024px.png>`.
+* **Not implemented:** signed/notarized release builds, upstream-pinned model hashes.
+
+
+---
+
+## 9. Platform Support & Change Log
+
+| | macOS | Windows |
+| :--- | :--- | :--- |
+| Mic capture | cpal | cpal |
+| System audio | ScreenCaptureKit (permission prompt) | WASAPI loopback, default output device (no prompt) |
+| Foundry runtime | Homebrew copy today (bundling is a follow-up) | Downloaded by the SDK at build time; bundled in the installer |
+| Key storage | Keychain | Credential Manager |
+| Exit workaround | `_exit(0)` | `TerminateProcess` |
+| Status | Primary, tested | Compiles in CI; awaiting hardware test |
+
+**Recent changes**
+
+* **Windows support:** export path falls back to `USERPROFILE` and reveals the file in Explorer; settings shortcut opens the Windows microphone privacy page; Foundry library name is platform-aware; Windows exit handler; real (placeholder) icons so the bundle builds.
+* **CI:** `.github/workflows/windows.yml` runs `tsc`, `vitest`, the frontend build and `cargo check` on `windows-latest`. A manual run also stages the runtime DLLs, builds the NSIS installer, verifies it contains `foundry_local.dll`, and uploads it as an artifact.
+* **Installer bundling:** the MIT Foundry runtime DLLs and license notices ship next to the exe (see licensing in section 8); a failed runtime load shows a clear "reinstall" message.
+* **Dependencies:** Tailwind pinned to 3.x (the v4 bump broke the frontend build); `@vitejs/plugin-react` 6 for Vite 8.
+* **Earlier:** AI note classification, UI refresh, mic/AEC alignment fix, export to `.md`, model-extracted owner/due for actions, session history, first-run model download.
+
+---
+
+## 10. Testing on Windows
+
+CI (`.github/workflows/windows.yml`) runs `tsc`, `vitest` and `cargo check` on `windows-latest` for every push and PR. Running it manually (*Actions > windows > Run workflow*) also builds the installer and attaches it as the `syntari-windows` artifact.
+
+**Tester steps (from source):**
+
+1. Install the Windows prerequisites in section 7, then `git clone` the repo and `git checkout feat/ui-refresh-note-classification`.
+2. `npm install`, then `npm run tauri dev`. The first Rust build is long (SQLCipher + Foundry runtime download).
+3. Wait for the ~4 GB model download (header status pill) before starting a session.
+4. Run this checklist and report pass/fail with the console output:
+   * App launches; no "Keychain unavailable" pill (Credential Manager holds the DB key).
+   * Mic only: *Start*, speak, transcript appears as "You".
+   * System audio: play a YouTube video through speakers/headphones; remote speech appears in the transcript. Try a different default output device and Bluetooth headphones.
+   * Notes: type shorthand (e.g. `act:`), check classification and AI suggestions.
+   * Stop, then open *History* and reload the session; restart the app and confirm it persists.
+   * *Export .md* writes to `%USERPROFILE%\Downloads` and Explorer opens with the file selected.
+   * Quit the app: note whether a crash dialog appears.
+   * With a mic privacy toggle off, the *open settings* hint opens the Windows Microphone privacy page.
+5. Optional: capture network connections during use (Resource Monitor or Wireshark) to confirm the only traffic is the model download.
+
+**Tester steps (from CI artifact):** download `syntari-windows` from the workflow run and install the `.exe`. Unsigned, so SmartScreen will warn (*More info > Run anyway*).
