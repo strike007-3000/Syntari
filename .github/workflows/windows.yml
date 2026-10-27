@@ -3,6 +3,8 @@ on:
   push: { branches: [main] }
   pull_request:
   workflow_dispatch: # manual run also builds the installer and uploads it as an artifact
+permissions:
+  contents: read
 jobs:
   build:
     runs-on: windows-latest

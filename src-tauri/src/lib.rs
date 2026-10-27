@@ -44,7 +44,7 @@ fn models_ready(st: State<'_, AppState>) -> bool {
 }
 
 #[tauri::command]
-fn start_syntari_session(app: AppHandle, st: State<'_, AppState>) -> Result<(), String> {
+fn start_syntari_session(app: AppHandle, st: State<'_, AppState>, offset_ms: u64) -> Result<(), String> {
     if !models_loaded(&st) {
         return Err("AI models are still loading".into());
     }
@@ -54,7 +54,7 @@ fn start_syntari_session(app: AppHandle, st: State<'_, AppState>) -> Result<(), 
     }
     st.tr.lock().unwrap().clear();
     let t0 = Instant::now();
-    let sess = audio::start(app, st.cap.clone(), st.tr.clone(), st.ai_engine.clone(), t0)?;
+    let sess = audio::start(app, st.cap.clone(), st.tr.clone(), st.ai_engine.clone(), offset_ms as f64 / 1000.0)?;
     *s = Some((sess, t0));
     Ok(())
 }
@@ -191,6 +191,13 @@ async fn extract_insights(app: AppHandle, since_ms: u64) -> Result<Vec<InsightIt
 }
 
 #[tauri::command]
+async fn summarize_transcript(app: AppHandle, chunks: Vec<ai::engine::TranscriptChunk>) -> Result<String, String> {
+    let st = app.state::<AppState>();
+    let engine = st.ai_engine.lock().await;
+    engine.summarize(&chunks).await
+}
+
+#[tauri::command]
 fn get_db_key() -> Result<String, String> {
     get_or_create_db_key()
 }
@@ -203,6 +210,11 @@ pub fn run() {
         version: 1,
         description: "init",
         sql: include_str!("../migrations/001_init.sql"),
+        kind: MigrationKind::Up,
+    }, Migration {
+        version: 2,
+        description: "summary",
+        sql: include_str!("../migrations/002_summary.sql"),
         kind: MigrationKind::Up,
     }];
 
@@ -257,6 +269,7 @@ pub fn run() {
             expand_note,
             export_markdown,
             extract_insights,
+            summarize_transcript,
             get_db_key
         ])
         .build(tauri::generate_context!())

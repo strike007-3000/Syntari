@@ -5,7 +5,7 @@ import { fmtClock } from "../types";
 export default function ShorthandPad() {
   const [text, setText] = useState("");
   const { notes: allNotes, addLine, transcript, sessionElapsedSeconds } = useStore();
-  const notes = allNotes.filter((n) => n.status !== "suggested"); // AI suggestions live in the dashboard only
+  const notes = allNotes.filter((n) => !n.auto); // only what the user typed; AI suggestions live in the dashboard
   const listEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

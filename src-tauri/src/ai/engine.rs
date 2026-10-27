@@ -402,6 +402,56 @@ impl FoundryEngine {
         })
     }
 
+    /// One-shot LLM call; returns the concatenated text of the response.
+    async fn complete(&self, system: &str, user: String) -> Result<String, String> {
+        let session = self.chat_session.as_ref().ok_or("AI model not loaded")?;
+        let request = Request::from_items(vec![
+            Item::system_message(vec![Item::text(system)]),
+            Item::user_message(vec![Item::text(user)]),
+        ]);
+        let response = session.process_request(request).await.map_err(|e| format!("Inference error: {e}"))?;
+        let mut raw = String::new();
+        for item in &response.items {
+            if let Some(t) = item.as_text() {
+                raw.push_str(t);
+            } else if let Some(msg) = item.as_message() {
+                for part in &msg.content {
+                    if let Some(t) = part.as_text() {
+                        raw.push_str(t);
+                    }
+                }
+            }
+        }
+        Ok(raw.trim().to_string())
+    }
+
+    /// Summarize a whole transcript. Long transcripts are summarized in segments, then merged.
+    pub async fn summarize(&self, chunks: &[TranscriptChunk]) -> Result<String, String> {
+        if chunks.is_empty() {
+            return Err("Transcript is empty".into());
+        }
+        const SEGMENT_CHARS: usize = 6000; // keeps each prompt well inside the small model's context
+        let sys = "You summarize meeting transcripts. Write a concise markdown summary: a short overview paragraph, \
+            then bullet lists under '### Key Points', '### Decisions', '### Action Items' (omit empty sections). \
+            Use only what the transcript states.";
+        let mut segments = vec![String::new()];
+        for c in chunks {
+            let line = format!("{}: {}\n", c.speaker, c.text);
+            if segments.last().unwrap().len() + line.len() > SEGMENT_CHARS && !segments.last().unwrap().is_empty() {
+                segments.push(String::new());
+            }
+            segments.last_mut().unwrap().push_str(&line);
+        }
+        let mut partials = Vec::new();
+        for seg in segments {
+            partials.push(self.complete(sys, format!("TRANSCRIPT:\n{seg}\nSUMMARY:")).await?);
+        }
+        if partials.len() == 1 {
+            return Ok(partials.remove(0));
+        }
+        self.complete(sys, format!("Merge these partial summaries of one meeting into a single summary:\n\n{}\n\nSUMMARY:", partials.join("\n\n---\n\n"))).await
+    }
+
     /// Extract structured meeting items (decisions, actions, risks) from a transcript window.
     pub async fn extract_insights(
         &self,

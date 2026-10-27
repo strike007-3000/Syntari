@@ -6,10 +6,11 @@ import { NoteExpandedPayload, TranscriptChunk, AudioLevels } from "./types";
 import Header from "./components/Header";
 import ShorthandPad from "./components/ShorthandPad";
 import NotesDashboard from "./components/NotesDashboard";
+import Meetings from "./components/Meetings";
 import TranscriptDrawer from "./components/TranscriptDrawer";
 
 export default function App() {
-  const { applyExpansion, pushChunk, setLevels, running } = useStore();
+  const { applyExpansion, pushChunk, setLevels, running, screen } = useStore();
 
   useEffect(() => {
     const subs = [
@@ -27,12 +28,12 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col bg-ink-950">
-      <Header />
+      {screen === "meetings" ? <Meetings /> : <><Header />
       <main className="grid min-h-0 flex-1 grid-cols-[minmax(240px,1fr)_minmax(0,2fr)_auto]">
         <div className="min-h-0 border-r border-ink-700"><ShorthandPad /></div>
         <div className="min-h-0"><NotesDashboard /></div>
         <div className="min-h-0 w-80 border-l border-ink-700 [&:has(button[aria-label='Open_transcript'])]:w-auto"><TranscriptDrawer /></div>
-      </main>
+      </main></>}
     </div>
   );
 }

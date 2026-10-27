@@ -25,6 +25,8 @@ export interface Note {
   owner?: string;
   due?: string;
   done?: boolean;
+  /** came from AI insight extraction, not typed by the user */
+  auto?: boolean;
   citation?: {
     chunkIds: number[];
     quote: string;
