@@ -26,13 +26,14 @@ export default function Header() {
   // Start stays disabled until the backend reports the models loaded
   const [modelsReady, setModelsReady] = useState(false);
   useEffect(() => {
-    invoke<boolean>("models_ready").then(setModelsReady).catch(() => {});
     const subs = [
       listen<{ name: string; percent: number }>("model-progress", (e) =>
         setModelMsg(`Downloading ${e.payload.name} (one-time) ${Math.round(e.payload.percent)}%`)),
       listen("models-ready", () => { setModelMsg(null); setModelsReady(true); }),
       listen<string>("model-error", (e) => setModelMsg(`AI unavailable: ${e.payload}`)),
     ];
+    // query only after listeners are registered, so a ready event can't slip between query and listen
+    Promise.all(subs).then(() => invoke<boolean>("models_ready")).then(setModelsReady).catch(() => {});
     return () => void subs.forEach((p) => p.then((off) => off()));
   }, []);
 

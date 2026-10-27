@@ -82,13 +82,19 @@ export const useStore = create<State>((set, get) => ({
   async start() {
     // Create the DB session first so no note/chunk can be saved with a null sessionId
     const startedAt = Date.now();
-    const db = await getDb();
-    const r = await db.execute("INSERT INTO sessions (started_at) VALUES (?)", [startedAt]);
-    const sessionId = r.lastInsertId ?? null;
+    // Best-effort: capture must still work when the keychain/SQL plugin is unavailable (sessionId stays null)
+    let db: Database | null = null;
+    let sessionId: number | null = null;
+    try {
+      db = await getDb();
+      sessionId = (await db.execute("INSERT INTO sessions (started_at) VALUES (?)", [startedAt])).lastInsertId ?? null;
+    } catch (e) {
+      console.error("db", e);
+    }
     try {
       await invoke("start_syntari_session");
     } catch (e) {
-      await db.execute("DELETE FROM sessions WHERE id=?", [sessionId]).catch(() => {});
+      if (db && sessionId !== null) await db.execute("DELETE FROM sessions WHERE id=?", [sessionId]).catch(() => {});
       throw e;
     }
     lastInsightMs = 0;
