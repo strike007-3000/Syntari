@@ -16,9 +16,7 @@ const Meter = ({ label, icon, v }: { label: string; icon: React.ReactNode; v: nu
 );
 
 export default function Header() {
-  const { running, sessionElapsedSeconds, levels, start, stop, tickTimer, listSessions, loadSession, sessionId, notes } = useStore();
-  const [past, setPast] = useState<{ id: number; started_at: number }[]>([]);
-  useEffect(() => { if (!running) listSessions().then(setPast).catch(() => {}); }, [running, listSessions]);
+  const { running, sessionElapsedSeconds, levels, start, stop, tickTimer, setScreen, loaded, notes, summary } = useStore();
   const [hasSystemAudio, setHasSystemAudio] = useState<boolean | null>(null);
 
   // null = no status line; string = status line for the one-time model download or an init error
@@ -85,23 +83,20 @@ export default function Header() {
         <Meter label="Remote" icon={<Speaker size={14} />} v={levels.system} />
         {!running && (
           <>
-            <select
-              aria-label="Past sessions"
-              value={sessionId ?? ""}
-              onChange={(e) => loadSession(Number(e.target.value))}
-              className="rounded-md border border-ink-700 bg-ink-800 px-2 py-1 text-xs text-slate-300"
-            >
-              <option value="" disabled>History…</option>
-              {past.map((p) => <option key={p.id} value={p.id}>{new Date(p.started_at).toLocaleString()}</option>)}
-            </select>
             <button
-              onClick={() => navigator.clipboard.writeText(toMarkdown(notes))}
+              onClick={() => setScreen("meetings")}
+              className="rounded-md border border-ink-700 bg-ink-800 px-2.5 py-1 text-xs text-slate-300 transition-colors hover:text-white"
+            >
+              ← Meetings
+            </button>
+            <button
+              onClick={() => navigator.clipboard.writeText(toMarkdown(notes, summary))}
               className="rounded-md border border-ink-700 bg-ink-800 px-2.5 py-1 text-xs text-slate-300 transition-colors hover:text-white"
             >
               Copy Markdown
             </button>
             <button
-              onClick={() => invoke("export_markdown", { content: toMarkdown(notes) }).catch((e) => alert(String(e)))}
+              onClick={() => invoke("export_markdown", { content: toMarkdown(notes, summary) }).catch((e) => alert(String(e)))}
               className="rounded-md border border-ink-700 bg-ink-800 px-2.5 py-1 text-xs text-slate-300 transition-colors hover:text-white"
               title="Save to your Downloads folder"
             >
@@ -120,7 +115,7 @@ export default function Header() {
             running ? "bg-red-500/80 hover:bg-red-500" : "bg-accent text-ink-950 shadow-lg shadow-accent/20 hover:bg-accent/90"
           }`}
         >
-          {running ? <><Square size={14} /> Stop</> : <><Play size={14} /> Start</>}
+          {running ? <><Square size={14} /> Stop</> : <><Play size={14} /> {loaded ? "Continue" : "Start"}</>}
         </button>
       </div>
     </header>

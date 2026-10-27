@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import Database from "@tauri-apps/plugin-sql";
 import { Note, NoteExpandedPayload, TranscriptChunk, AudioLevels, parseShorthand } from "./types";
 
-export type View = "notes" | "markdown";
+export type View = "notes" | "summary" | "markdown";
 
 interface InsightItem {
   kind: string;
@@ -11,6 +11,8 @@ interface InsightItem {
   owner?: string;
   due?: string;
 }
+
+export interface MeetingRow { id: number; started_at: number; summary: string | null }
 
 interface State {
   running: boolean;
@@ -22,6 +24,14 @@ interface State {
   levels: AudioLevels;
   view: View;
   focusChunk: number | null;
+  screen: "meetings" | "session";
+  loaded: boolean; // current session came from history/stop, so Start continues it
+  durationMs: number;
+  setScreen: (s: "meetings" | "session") => void;
+  newMeeting: () => void;
+  summary: string;
+  summarizing: boolean;
+  summarize: () => Promise<void>;
   setView: (v: View) => void;
   tickTimer: () => void;
   start: () => Promise<void>;
@@ -37,7 +47,7 @@ interface State {
   pushAutoNote: (item: InsightItem, tsMs: number) => void;
   acceptSuggestion: (id: string) => void;
   dismissSuggestion: (id: string) => void;
-  listSessions: () => Promise<{ id: number; started_at: number }[]>;
+  listSessions: (q?: string) => Promise<MeetingRow[]>;
   loadSession: (id: number) => Promise<void>;
 }
 
@@ -70,6 +80,16 @@ export const useStore = create<State>((set, get) => ({
   levels: { mic: 0, system: 0 },
   view: "notes",
   focusChunk: null,
+  screen: "meetings",
+  loaded: false,
+  durationMs: 0,
+  setScreen: (screen) => set({ screen }),
+  newMeeting: () => {
+    if (get().running) return;
+    set({ screen: "session", sessionId: null, loaded: false, durationMs: 0, sessionElapsedSeconds: 0, notes: [], transcript: [], summary: "", view: "notes" });
+  },
+  summary: "",
+  summarizing: false,
   setView: (view) => set({ view }),
 
   tickTimer: () => {
@@ -80,32 +100,39 @@ export const useStore = create<State>((set, get) => ({
   },
 
   async start() {
+    // A loaded past session is continued in place; otherwise a new one is created.
+    const { loaded, sessionId: prevId, durationMs, notes: prevNotes } = get();
+    const resume = loaded && prevId !== null;
+    const offset = resume ? durationMs : 0;
+    const startedAt = Date.now() - offset;
     // Create the DB session first so no note/chunk can be saved with a null sessionId
-    const startedAt = Date.now();
     // Best-effort: capture must still work when the keychain/SQL plugin is unavailable (sessionId stays null)
     let db: Database | null = null;
-    let sessionId: number | null = null;
-    try {
-      db = await getDb();
-      sessionId = (await db.execute("INSERT INTO sessions (started_at) VALUES (?)", [startedAt])).lastInsertId ?? null;
-    } catch (e) {
-      console.error("db", e);
+    let sessionId: number | null = resume ? prevId : null;
+    if (!resume) {
+      try {
+        db = await getDb();
+        sessionId = (await db.execute("INSERT INTO sessions (started_at) VALUES (?)", [startedAt])).lastInsertId ?? null;
+      } catch (e) {
+        console.error("db", e);
+      }
     }
     try {
-      await invoke("start_syntari_session");
+      await invoke("start_syntari_session", { offsetMs: offset });
     } catch (e) {
-      if (db && sessionId !== null) await db.execute("DELETE FROM sessions WHERE id=?", [sessionId]).catch(() => {});
+      if (db && !resume && sessionId !== null) await db.execute("DELETE FROM sessions WHERE id=?", [sessionId]).catch(() => {});
       throw e;
     }
-    lastInsightMs = 0;
+    lastInsightMs = offset;
     seenInsightTexts.clear();
+    if (resume) prevNotes.forEach((n) => seenInsightTexts.add(`${n.kind}:${(n.expanded ?? n.raw).toLowerCase().trim()}`));
     set({
       running: true,
       startedAt,
-      sessionElapsedSeconds: 0,
-      notes: [],
-      transcript: [],
+      sessionElapsedSeconds: Math.floor(offset / 1000),
       sessionId,
+      loaded: sessionId !== null,
+      ...(resume ? {} : { notes: [], transcript: [], summary: "" }),
     });
     // Poll for insights every 30s
     insightInterval = setInterval(async () => {
@@ -127,9 +154,25 @@ export const useStore = create<State>((set, get) => ({
   async stop() {
     if (insightInterval) { clearInterval(insightInterval); insightInterval = null; }
     await invoke("stop_syntari_session");
-    const { sessionId } = get();
-    set({ running: false });
+    const { sessionId, startedAt } = get();
+    set({ running: false, durationMs: Date.now() - startedAt });
     if (sessionId) persist((d) => d.execute("UPDATE sessions SET ended_at=? WHERE id=?", [Date.now(), sessionId]));
+  },
+
+  async summarize() {
+    const { transcript, sessionId } = get();
+    if (!transcript.length) throw new Error("No transcript to summarize");
+    set({ summarizing: true });
+    try {
+      const chunks = [...transcript]
+        .sort((a, b) => a.ts - b.ts)
+        .map((c) => ({ start: c.start ?? c.ts / 1000, end: c.end ?? c.ts / 1000, speaker: c.speaker, text: c.text }));
+      const summary = await invoke<string>("summarize_transcript", { chunks });
+      set({ summary, view: "summary" });
+      if (sessionId) persist((d) => d.execute("UPDATE sessions SET summary=? WHERE id=?", [summary, sessionId]));
+    } finally {
+      set({ summarizing: false });
+    }
   },
 
   async addLine(line, explicitTs) {
@@ -260,6 +303,7 @@ export const useStore = create<State>((set, get) => ({
       raw: item.text,
       ts: tsMs,
       status: "suggested",
+      auto: true,
       owner: item.owner,
       due: item.due,
     };
@@ -273,7 +317,7 @@ export const useStore = create<State>((set, get) => ({
     const { sessionId } = get();
     persist((d) =>
       d.execute(
-        "INSERT INTO notes (id, session_id, kind, raw, ts_ms, owner, due, expanded) VALUES (?,?,?,?,?,?,?,?)",
+        "INSERT INTO notes (id, session_id, kind, raw, ts_ms, owner, due, expanded, auto) VALUES (?,?,?,?,?,?,?,?,1)",
         [note.id, sessionId, note.kind, note.raw, note.ts, note.owner ?? null, note.due ?? null, note.raw],
       ),
     );
@@ -283,8 +327,15 @@ export const useStore = create<State>((set, get) => ({
     set((s) => ({ notes: s.notes.filter((n) => n.id !== id) }));
   },
 
-  async listSessions() {
-    return (await getDb()).select("SELECT id, started_at FROM sessions ORDER BY started_at DESC LIMIT 100");
+  async listSessions(q = "") {
+    const like = `%${q.trim()}%`;
+    return (await getDb()).select(
+      `SELECT id, started_at, summary FROM sessions s WHERE ?1 = '%%' OR summary LIKE ?1
+         OR EXISTS (SELECT 1 FROM notes n WHERE n.session_id = s.id AND (n.raw LIKE ?1 OR n.expanded LIKE ?1))
+         OR EXISTS (SELECT 1 FROM transcript t WHERE t.session_id = s.id AND t.text LIKE ?1)
+       ORDER BY started_at DESC LIMIT 200`,
+      [like],
+    );
   },
 
   async loadSession(id) {
@@ -292,11 +343,18 @@ export const useStore = create<State>((set, get) => ({
     const d = await getDb();
     const rows = await d.select<any[]>("SELECT * FROM notes WHERE session_id=? ORDER BY ts_ms", [id]);
     const chunks = await d.select<any[]>("SELECT * FROM transcript WHERE session_id=? ORDER BY chunk_id", [id]);
+    const sum = await d.select<{ summary: string | null }[]>("SELECT summary FROM sessions WHERE id=?", [id]);
+    const durationMs = Math.max(0, ...chunks.map((r) => r.ts_ms), ...rows.map((r) => r.ts_ms));
     set({
+      screen: "session",
+      loaded: true,
+      durationMs,
+      sessionElapsedSeconds: Math.floor(durationMs / 1000),
       sessionId: id,
+      summary: sum[0]?.summary ?? "",
       notes: rows.map((r) => ({
         id: r.id, kind: r.kind, raw: r.raw, ts: r.ts_ms, status: "completed", expanded: r.expanded ?? undefined,
-        owner: r.owner ?? undefined, due: r.due ?? undefined, done: !!r.done,
+        owner: r.owner ?? undefined, due: r.due ?? undefined, done: !!r.done, auto: !!r.auto,
         citation: r.citation_quote ? { chunkIds: [], quote: r.citation_quote } : undefined,
       })),
       transcript: chunks.map((r) => ({ id: r.chunk_id, speaker: r.speaker, text: r.text, ts: r.ts_ms })),

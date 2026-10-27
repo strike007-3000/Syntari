@@ -118,7 +118,7 @@ pub fn start(
     cap: Arc<Capture>,
     tr: Arc<Transcript>,
     engine: Arc<tokio::sync::Mutex<FoundryEngine>>,
-    _t0: Instant,
+    offset_secs: f64, // resumed sessions continue the earlier timeline
 ) -> Result<Session, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
@@ -233,7 +233,7 @@ pub fn start(
                         eprintln!("[Loopback VAD] RMS: {:.5}, speech detected", rms);
                     }
                     if is_speech {
-                        let start_secs = begin as f64 / 16_000.0;
+                        let start_secs = offset_secs + begin as f64 / 16_000.0;
                         let end_secs = start_secs + pcm.len() as f64 / 16_000.0;
 
                         let wav_bytes = create_wav_buffer(pcm, 16_000);

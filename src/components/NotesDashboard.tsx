@@ -66,8 +66,8 @@ function Item({ n }: { n: Note }) {
   );
 }
 
-export const toMarkdown = (notes: Note[]) =>
-  SECTIONS.map(({ kind, title }) => {
+export const toMarkdown = (notes: Note[], summary = "") =>
+  [summary && `## Summary\n${summary}`, ...SECTIONS.map(({ kind, title }) => {
     const items = notes.filter((n) => n.kind === kind && n.status !== "suggested");
     if (!items.length) return "";
     const lines = items.map((n) =>
@@ -76,16 +76,16 @@ export const toMarkdown = (notes: Note[]) =>
         : `- ${n.expanded ?? n.raw} _[${fmtClock(n.ts)}]_`,
     );
     return `## ${title}\n${lines.join("\n")}`;
-  }).filter(Boolean).join("\n\n");
+  })].filter(Boolean).join("\n\n");
 
 export default function NotesDashboard() {
-  const { notes, view, setView } = useStore();
+  const { notes, view, setView, summary, summarizing, summarize, transcript, running } = useStore();
   return (
     <section className="flex h-full flex-col" aria-label="Notes view">
       <nav className="flex gap-1 border-b border-ink-700 p-2 text-sm">
-        {(["notes", "markdown"] as const).map((v) => (
+        {(["notes", "summary", "markdown"] as const).map((v) => (
           <button key={v} onClick={() => setView(v)} className={`rounded-md px-3 py-1 transition-colors ${view === v ? "bg-ink-700 text-white font-medium" : "text-slate-400 hover:text-slate-200"}`}>
-            {v === "markdown" ? "Markdown" : "Notes"}
+            {v === "markdown" ? "Markdown" : v === "summary" ? "Summary" : "Notes"}
           </button>
         ))}
       </nav>
@@ -103,9 +103,28 @@ export default function NotesDashboard() {
               </div>
             );
           })}
+        {view === "summary" && (
+          <div className="space-y-3 text-sm">
+            <button
+              onClick={() => summarize().catch((e) => alert(String(e)))}
+              disabled={running || summarizing || !transcript.length}
+              title={running ? "Stop the session first" : undefined}
+              className="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-ink-950 disabled:opacity-50"
+            >
+              {summarizing ? "Summarizing…" : summary ? "Regenerate summary" : "Generate summary"}
+            </button>
+            {summary ? (
+              <article className="space-y-2 [&_h3]:mt-3 [&_h3]:font-semibold [&_ul]:list-disc [&_ul]:pl-5">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{summary}</ReactMarkdown>
+              </article>
+            ) : (
+              <p className="text-xs text-slate-500">Stop the session, then generate a full summary of the transcript.</p>
+            )}
+          </div>
+        )}
         {view === "markdown" && (
           <article className="space-y-2 text-sm [&_h2]:mt-3 [&_h2]:font-semibold [&_ul]:list-disc [&_ul]:pl-5">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{toMarkdown(notes)}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{toMarkdown(notes, summary)}</ReactMarkdown>
           </article>
         )}
       </div>
