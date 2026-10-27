@@ -36,7 +36,6 @@ export default function Header() {
   }, []);
 
   useEffect(() => {
-    invoke("get_db_key").catch(() => setModelMsg("Keychain unavailable: notes will not be saved"));
     invoke<{ system_audio: boolean }>("check_permissions")
       .then((res) => setHasSystemAudio(res.system_audio))
       .catch(() => setHasSystemAudio(false));

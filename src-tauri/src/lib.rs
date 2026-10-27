@@ -1,23 +1,6 @@
 mod ai;
 mod audio;
 
-/// Retrieves the database encryption key from the OS keychain, creating one if absent.
-fn get_or_create_db_key() -> Result<String, String> {
-    let entry = keyring::Entry::new("syntari", "db-encryption-key")
-        .map_err(|e| format!("keychain entry error: {e}"))?;
-    match entry.get_password() {
-        Ok(key) => Ok(key),
-        Err(_) => {
-            // Generate a new 32-byte cryptographically secure random key as hex
-            let mut bytes = [0u8; 32];
-            getrandom::getrandom(&mut bytes).map_err(|e| format!("getrandom error: {e}"))?;
-            let key: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
-            entry.set_password(&key).map_err(|e| format!("keychain write error: {e}"))?;
-            Ok(key)
-        }
-    }
-}
-
 use ai::engine::{EnhancedResult, FoundryEngine, InsightItem};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -197,15 +180,7 @@ async fn summarize_transcript(app: AppHandle, chunks: Vec<ai::engine::Transcript
     engine.summarize(&chunks).await
 }
 
-#[tauri::command]
-fn get_db_key() -> Result<String, String> {
-    get_or_create_db_key()
-}
-
 pub fn run() {
-    // No unencrypted fallback: without a keychain key the SQL plugin is not registered and nothing is persisted.
-    let db_key = get_or_create_db_key().map_err(|e| eprintln!("[Syntari] Keychain error, notes will not be saved: {e}")).ok();
-
     let migrations = vec![Migration {
         version: 1,
         description: "init",
@@ -218,11 +193,9 @@ pub fn run() {
         kind: MigrationKind::Up,
     }];
 
-    let mut builder = tauri::Builder::default();
-    if let Some(key) = db_key {
-        builder = builder.plugin(Sql::default().add_migrations(&format!("sqlite:syntari.db?key={key}"), migrations).build());
-    }
-    builder
+    // Plain on-device SQLite: the plugin's sqlx rejects a `?key=` URL param, so a keychain-keyed URL never opened.
+    tauri::Builder::default()
+        .plugin(Sql::default().add_migrations("sqlite:syntari.db", migrations).build())
         .setup(|app| {
             let resource_path = std::env::var("SYNTARI_MODELS_DIR").map(PathBuf::from).unwrap_or_else(|_| {
                 app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from(".")).join("models")
@@ -269,8 +242,7 @@ pub fn run() {
             expand_note,
             export_markdown,
             extract_insights,
-            summarize_transcript,
-            get_db_key
+            summarize_transcript
         ])
         .build(tauri::generate_context!())
         .expect("error while building Syntari application")
