@@ -8,6 +8,9 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      # Only installer builds need the SDK's build.rs to download foundry_local.dll; keep in step with the foundry-local-sdk crate version.
+      FOUNDRY_LOCAL_RUNTIME_VERSION: ${{ github.event_name == 'workflow_dispatch' && '2.1.0' || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -46,3 +49,27 @@ jobs:
         with:
           name: syntari-windows
           path: src-tauri/target/release/bundle/**/*.exe
+  publish:
+    needs: build
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # only this job can write; the build job runs third-party actions read-only
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: windows-build-${{ github.run_number }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: syntari-windows
+          path: installer
+      - name: Publish the installer as a pre-release
+        run: |
+          exe=$(find installer -name '*.exe' | head -n1)
+          # a rerun keeps run_number, so replace the asset instead of failing on the existing release
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$exe" --clobber
+          else
+            gh release create "$TAG" "$exe" --prerelease --target "${{ github.sha }}" --title "Windows build ${{ github.run_number }}" --notes "Unsigned test installer from ${{ github.ref_name }} @ ${{ github.sha }}. SmartScreen: More info > Run anyway."
+          fi
