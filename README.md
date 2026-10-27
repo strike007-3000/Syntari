@@ -44,7 +44,7 @@ Syntari pairs human intentionality with local AI:
 * **Volatile RAM Audio Only:** Raw audio lives in RAM circular buffers. The one exception: each chunk sent to Whisper is briefly staged as a plaintext, owner-only (0600) `.wav` in the OS temp dir (the Foundry SDK requires a file URI), then zero-overwritten and deleted. A crash mid-transcription can leave one chunk behind; full-disk-encryption (FileVault/BitLocker) is recommended.
 * **Zero External Drivers:** Captures macOS system audio natively via ScreenCaptureKit and Windows audio via WASAPI loopback, eliminating the need for virtual audio cables (e.g., BlackHole).
 * **Local Hardware Acceleration:** Runs Whisper for speech-to-text and Phi-4-mini for text expansion through Foundry Local's execution providers (WebGPU on Apple Silicon for the chat model, CPU for speech). Windows DirectML/NPU support comes from Foundry but is untested here.
-* **Encrypted At-Rest Storage:** Session records, structured notes, and transcripts are encrypted using SQLCipher, with a random 256-bit key stored in the OS credential vault (macOS Keychain / Windows Credential Manager). If the keychain is unavailable, nothing is persisted (there is no unencrypted fallback).
+* **On-Device Storage:** Session records, structured notes, transcripts and summaries are stored in a plain SQLite database in the app-data directory. Nothing leaves the machine; full-disk encryption (FileVault/BitLocker) is recommended for at-rest protection.
 
 ---
 
@@ -83,7 +83,7 @@ Syntari pairs human intentionality with local AI:
 │ └──────────────────────────────────┘  └──────────────────────────────────┘ │
 │                                                                            │
 │       ┌────────────────────────────────────────────────────────────┐       │
-│       │      SQLCipher (AES-256), key in OS credential vault       │       │
+│       │      SQLite, on-device only       │       │
 │       └────────────────────────────────────────────────────────────┘       │
 │                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘
@@ -120,7 +120,7 @@ For `act:`, the first word is the owner only if it is capitalised and followed b
 | :--- | :--- |
 | **Network Egress** | CSP restricts the frontend to `default-src 'self'`. Backend network access is the one-time model download on first run (see Models), plus whatever the Foundry Local runtime does internally (unverified; see `scripts/check-egress.sh`). Syntari itself never transmits user data. |
 | **Audio Forensics** | Audio is held in RAM ring buffers. Each slice sent to Whisper is staged for the duration of transcription as an owner-only (0600) `.wav` in the OS temp dir (the Foundry SDK needs a file path), then zero-overwritten and deleted. A crash mid-transcription can leave one slice behind; use FileVault/BitLocker. |
-| **Disk Inspection** | Local databases use SQLCipher AES-256 encryption with a random key anchored in the OS Keychain / Credential Manager. Without a keychain key the app saves nothing. Model files are SHA-256 recorded after first download and verified on every launch (trust-on-first-use). |
+| **Disk Inspection** | The local database is plain SQLite in the app-data directory (no at-rest encryption; use FileVault/BitLocker). Model files are SHA-256 recorded after first download and verified on every launch (trust-on-first-use). |
 | **Inference Leaks** | Models run in-process through the Foundry Local ONNX runtime in-process; Syntari makes no inference API calls. Weights are fetched once, then used from the local cache. |
 | **Feedback Leaks** | Mic audio is ducked and echo-cancelled against system audio, and the mic track is skipped while system audio is playing, to limit speaker bleed. |
 
@@ -136,7 +136,7 @@ syntari/
 │   │   ├── ShorthandPad.tsx           # Scratchpad input, dynamic timestamp sync
 │   │   ├── NotesDashboard.tsx         # Structured cards (Decisions, Actions, Risks)
 │   │   └── TranscriptDrawer.tsx       # Live dual-track transcript viewer
-│   ├── store.ts                       # Zustand state, SQLCipher persistence, session history
+│   ├── store.ts                       # Zustand state, SQLite persistence, session history
 │   └── types.ts                       # Domain types & shorthand parser
 ├── src-tauri/                         # Backend (Rust)
 │   ├── src/
@@ -193,7 +193,7 @@ Models are not bundled or committed. On first launch Syntari downloads whisper-s
 * **History:** when no session is running, the header's *History* dropdown reloads any past session (notes + transcript).
 * **Export:** *Copy Markdown* copies the current notes to the clipboard; *Export .md* saves them to `Downloads` in your home folder (`%USERPROFILE%` on Windows) and reveals the file in Finder / Explorer.
 * **Moving notes:** hover a note and use its dropdown to move it to another card.
-* **Status pill:** shows one-time model download progress, model errors, or "Keychain unavailable: notes will not be saved".
+* **Status pill:** shows one-time model download progress and model errors.
 
 ### Running Locally
 
@@ -213,7 +213,6 @@ npm run tauri dev
 
 ## 8. Known Limitations & Troubleshooting
 
-* **Keychain prompt on every dev rebuild:** unsigned dev builds are a new app to macOS each time; enter your login password and choose *Always Allow*. Denying means no persistence.
 * **First launch is slow:** ~4 GB of models download once (progress in the header). Transcription is unavailable until it finishes.
 * **Transcript accuracy:** speech is cut on silence gaps (3 s minimum, 12 s maximum) and transcribed by whisper-small. Larger models (`whisper-medium`, `whisper-large-v3-turbo`) are in the Foundry catalog but not wired up. Non-speech tags like `(soft music)` are discarded.
 * **You-track during remote audio:** the mic track is kept while system audio plays only if its energy after echo cancellation exceeds 0.005 RMS (`audio/mod.rs`). The threshold is untuned; speaker bleed may be transcribed as "You" or quiet speech dropped. Use headphones for best results.
@@ -234,7 +233,6 @@ npm run tauri dev
 | Mic capture | cpal | cpal |
 | System audio | ScreenCaptureKit (permission prompt) | WASAPI loopback, default output device (no prompt) |
 | Foundry runtime | Homebrew copy today (bundling is a follow-up) | Downloaded by the SDK at build time; bundled in the installer |
-| Key storage | Keychain | Credential Manager |
 | Exit workaround | `_exit(0)` | `TerminateProcess` |
 | Status | Primary, tested | Compiles in CI; awaiting hardware test |
 
@@ -258,7 +256,6 @@ CI (`.github/workflows/windows.yml`) runs `tsc`, `vitest` and `cargo check` on `
 2. `npm install`, then `npm run tauri dev`. The first Rust build is long (SQLCipher + Foundry runtime download).
 3. Wait for the ~4 GB model download (header status pill) before starting a session.
 4. Run this checklist and report pass/fail with the console output:
-   * App launches; no "Keychain unavailable" pill (Credential Manager holds the DB key).
    * Mic only: *Start*, speak, transcript appears as "You".
    * System audio: play a YouTube video through speakers/headphones; remote speech appears in the transcript. Try a different default output device and Bluetooth headphones.
    * Notes: type shorthand (e.g. `act:`), check classification and AI suggestions.
