@@ -61,10 +61,7 @@ const seenInsightTexts = new Set<string>();
 const typedKinds = new Set<string>();
 const getDb = () => {
   if (!db) {
-    db = invoke<string>("get_db_key").then((key) => {
-      const url = key ? `sqlite:syntari.db?key=${key}` : "sqlite:syntari.db";
-      return Database.load(url);
-    });
+    db = Database.load("sqlite:syntari.db");
   }
   return db;
 };
