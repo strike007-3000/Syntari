@@ -1,7 +1,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useStore } from "../store";
-import { Note, NoteKind, fmtClock } from "../types";
+import { Note, NoteKind, TranscriptChunk, fmtClock } from "../types";
 
 const SECTIONS: { kind: NoteKind; title: string }[] = [
   { kind: "decision", title: "Decisions" },
@@ -33,7 +33,7 @@ function Item({ n }: { n: Note }) {
       <button
         className="flex-1 text-left"
         onClick={() => {
-          if (!n.citation) return;
+          if (n.citation?.start === undefined) return;
           // citations carry seconds, not chunk ids: jump to the nearest chunk by timestamp
           const t = n.citation.start * 1000;
           const nearest = transcript.reduce<TranscriptChunk | null>((b, c) => (!b || Math.abs(c.ts - t) < Math.abs(b.ts - t) ? c : b), null);
