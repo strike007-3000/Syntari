@@ -1,7 +1,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useStore } from "../store";
-import { Note, NoteKind, fmtClock } from "../types";
+import { Note, NoteKind, TranscriptChunk, fmtClock } from "../types";
 
 const SECTIONS: { kind: NoteKind; title: string; dot: string }[] = [
   { kind: "decision", title: "Decisions", dot: "bg-emerald-400" },
@@ -11,7 +11,7 @@ const SECTIONS: { kind: NoteKind; title: string; dot: string }[] = [
 ];
 
 function Item({ n }: { n: Note }) {
-  const { toggleDone, inspect, acceptSuggestion, dismissSuggestion, setKind } = useStore();
+  const { toggleDone, inspect, acceptSuggestion, dismissSuggestion, setKind, transcript } = useStore();
   const body = n.expanded ?? n.raw;
 
   if (n.status === "suggested") {
@@ -32,7 +32,13 @@ function Item({ n }: { n: Note }) {
       )}
       <button
         className="flex-1 text-left"
-        onClick={() => n.citation && inspect(n.citation.chunkIds[0] ?? null)}
+        onClick={() => {
+          if (n.citation?.start === undefined) return;
+          // citations carry seconds, not chunk ids: jump to the nearest chunk by timestamp
+          const t = n.citation.start * 1000;
+          const nearest = transcript.reduce<TranscriptChunk | null>((b, c) => (!b || Math.abs(c.ts - t) < Math.abs(b.ts - t) ? c : b), null);
+          inspect(nearest?.id ?? null);
+        }}
         title="Inspect in transcript"
       >
         <span className={n.done ? "line-through opacity-50" : ""}>{body}</span>

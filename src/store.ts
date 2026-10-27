@@ -80,8 +80,23 @@ export const useStore = create<State>((set, get) => ({
   },
 
   async start() {
-    await invoke("start_syntari_session");
+    // Create the DB session first so no note/chunk can be saved with a null sessionId
     const startedAt = Date.now();
+    // Best-effort: capture must still work when the keychain/SQL plugin is unavailable (sessionId stays null)
+    let db: Database | null = null;
+    let sessionId: number | null = null;
+    try {
+      db = await getDb();
+      sessionId = (await db.execute("INSERT INTO sessions (started_at) VALUES (?)", [startedAt])).lastInsertId ?? null;
+    } catch (e) {
+      console.error("db", e);
+    }
+    try {
+      await invoke("start_syntari_session");
+    } catch (e) {
+      if (db && sessionId !== null) await db.execute("DELETE FROM sessions WHERE id=?", [sessionId]).catch(() => {});
+      throw e;
+    }
     lastInsightMs = 0;
     seenInsightTexts.clear();
     set({
@@ -90,11 +105,7 @@ export const useStore = create<State>((set, get) => ({
       sessionElapsedSeconds: 0,
       notes: [],
       transcript: [],
-      sessionId: null,
-    });
-    persist(async (d) => {
-      const r = await d.execute("INSERT INTO sessions (started_at) VALUES (?)", [startedAt]);
-      set({ sessionId: r.lastInsertId ?? null });
+      sessionId,
     });
     // Poll for insights every 30s
     insightInterval = setInterval(async () => {
