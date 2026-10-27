@@ -33,8 +33,21 @@ pub struct AppState {
     pub session: std::sync::Mutex<Option<(audio::Session, Instant)>>,
 }
 
+fn models_loaded(st: &AppState) -> bool {
+    // try_lock: the engine is only locked briefly by in-flight work, so a busy lock counts as ready
+    st.ai_engine.try_lock().map(|e| e.is_ready()).unwrap_or(true)
+}
+
+#[tauri::command]
+fn models_ready(st: State<'_, AppState>) -> bool {
+    models_loaded(&st)
+}
+
 #[tauri::command]
 fn start_syntari_session(app: AppHandle, st: State<'_, AppState>) -> Result<(), String> {
+    if !models_loaded(&st) {
+        return Err("AI models are still loading".into());
+    }
     let mut s = st.session.lock().unwrap();
     if s.is_some() {
         return Err("session already running".into());
@@ -212,6 +225,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            models_ready,
             start_syntari_session,
             stop_syntari_session,
             get_audio_levels,

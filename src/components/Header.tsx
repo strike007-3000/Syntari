@@ -21,13 +21,16 @@ export default function Header() {
   useEffect(() => { if (!running) listSessions().then(setPast).catch(() => {}); }, [running, listSessions]);
   const [hasSystemAudio, setHasSystemAudio] = useState<boolean | null>(null);
 
-  // null = ready/unknown; string = status line for the one-time model download or an init error
+  // null = no status line; string = status line for the one-time model download or an init error
   const [modelMsg, setModelMsg] = useState<string | null>(null);
+  // Start stays disabled until the backend reports the models loaded
+  const [modelsReady, setModelsReady] = useState(false);
   useEffect(() => {
+    invoke<boolean>("models_ready").then(setModelsReady).catch(() => {});
     const subs = [
       listen<{ name: string; percent: number }>("model-progress", (e) =>
         setModelMsg(`Downloading ${e.payload.name} (one-time) ${Math.round(e.payload.percent)}%`)),
-      listen("models-ready", () => setModelMsg(null)),
+      listen("models-ready", () => { setModelMsg(null); setModelsReady(true); }),
       listen<string>("model-error", (e) => setModelMsg(`AI unavailable: ${e.payload}`)),
     ];
     return () => void subs.forEach((p) => p.then((off) => off()));
@@ -97,7 +100,9 @@ export default function Header() {
         </span>
         <button
           onClick={() => (running ? stop() : start()).catch((e) => alert(String(e)))}
-          className={`flex items-center gap-1 rounded px-3 py-1 text-sm font-medium transition-colors ${
+          disabled={!running && !modelsReady}
+          title={!running && !modelsReady ? "Waiting for AI models to load" : undefined}
+          className={`flex items-center gap-1 rounded px-3 py-1 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
             running ? "bg-red-500/80 hover:bg-red-500" : "bg-accent text-ink-950 hover:bg-accent/90"
           }`}
         >
