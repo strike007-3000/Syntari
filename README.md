@@ -66,7 +66,7 @@ Syntari pairs human intentionality with local AI:
                │                       ▲                       ▲
                │ invoke                │ event                 │ event
                │ expand_note,          │ note-expanded         │ transcript-chunk
-                │ summarize_transcript  │
+               │ summarize_transcript  │                       │
                ▼                       │                       │
 ┌────────────────────────────────────────────────────────────────────────────┐
 │                            TAURI v2 CORE (Rust)                            │
