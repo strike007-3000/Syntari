@@ -4,7 +4,7 @@ on:
   pull_request:
   workflow_dispatch: # manual run also builds the installer and uploads it as an artifact
 permissions:
-  contents: read
+  contents: write # publish the installer as a GitHub Release
 jobs:
   build:
     runs-on: windows-latest
@@ -49,3 +49,11 @@ jobs:
         with:
           name: syntari-windows
           path: src-tauri/target/release/bundle/**/*.exe
+      - name: Publish the installer as a pre-release
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $exe = Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
+          gh release create "windows-build-${{ github.run_number }}" $exe.FullName --prerelease --target "${{ github.sha }}" --title "Windows build ${{ github.run_number }}" --notes "Unsigned test installer from ${{ github.ref_name }} @ ${{ github.sha }}. SmartScreen: More info > Run anyway."
