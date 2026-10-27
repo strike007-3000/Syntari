@@ -8,6 +8,9 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      # Without this the SDK's build.rs skips the native download, so foundry_local.dll never appears. Keep in step with the foundry-local-sdk crate version.
+      FOUNDRY_LOCAL_RUNTIME_VERSION: 2.1.0
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
