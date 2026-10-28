@@ -85,7 +85,7 @@ fn free_bytes(dir: &Path) -> Option<u64> {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq)]
 struct HashEntry { sha: String, size: u64, mtime_ns: u128 }
 
 /// Trust-on-first-use integrity check: hashes are recorded after the download and re-checked
@@ -99,7 +99,13 @@ async fn verify_integrity(model: &Model, name: &str) -> Result<(), String> {
         use sha2::{Digest, Sha256};
         use std::collections::BTreeMap;
         let manifest = dir.join(".syntari-sha256");
-        let raw = std::fs::read_to_string(&manifest).ok();
+        // only a genuinely absent manifest starts a new baseline; an unreadable one fails closed
+        let raw = match std::fs::read_to_string(&manifest) {
+            Ok(r) => Some(r),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(format!("cannot read integrity manifest: {e}")),
+        };
+        let corrupt = || "integrity manifest is damaged; delete the model folder to re-download".to_string();
         let saved: Option<BTreeMap<String, HashEntry>> = raw.as_deref().and_then(|r| serde_json::from_str(r).ok());
         // pre-mtime manifests were a plain path -> sha map; still honoured, then upgraded below
         let legacy: Option<BTreeMap<String, String>> = raw.as_deref().and_then(|r| serde_json::from_str(r).ok());
@@ -122,13 +128,15 @@ async fn verify_integrity(model: &Model, name: &str) -> Result<(), String> {
         }
         let write = |m: &BTreeMap<String, HashEntry>| std::fs::write(&manifest, serde_json::to_string(m).unwrap()).map_err(|e| e.to_string());
         let shas: BTreeMap<&String, &String> = current.iter().map(|(k, v)| (k, &v.sha)).collect();
-        let expected: Option<BTreeMap<&String, &String>> = match (&saved, &legacy) {
-            (Some(m), _) => Some(m.iter().map(|(k, v)| (k, &v.sha)).collect()),
-            (None, Some(m)) => Some(m.iter().collect()),
+        let expected: Option<BTreeMap<&String, &String>> = match (&saved, &legacy, &raw) {
+            (Some(m), _, _) => Some(m.iter().map(|(k, v)| (k, &v.sha)).collect()),
+            (None, Some(m), _) => Some(m.iter().collect()),
+            (None, None, Some(_)) => return Err(corrupt()),
             _ => None,
         };
         match expected {
-            Some(exp) if exp == shas => if saved.is_none() { write(&current) } else { Ok(()) },
+            // rewrite when cached size/mtime went stale (same content) so the next launch skips hashing
+            Some(exp) if exp == shas => if saved.as_ref() != Some(&current) { write(&current) } else { Ok(()) },
             Some(_) => Err("model files changed since download (corrupt or tampered); delete the model folder to re-download".to_string()),
             None => write(&current),
         }

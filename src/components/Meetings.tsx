@@ -48,15 +48,16 @@ export default function Meetings() {
                     autoFocus
                     defaultValue={r.title ?? ""}
                     placeholder="Meeting title"
-                    onBlur={(e) => { renameSession(r.id, e.target.value).then(refresh); setRenaming(null); }}
+                    onBlur={(e) => renameSession(r.id, e.target.value).then(() => { setRenaming(null); refresh(); }).catch((err) => { alert(`Rename failed: ${err}`); e.target.focus(); })}
                     onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setRenaming(null); }}
                     className="min-w-0 flex-1 rounded border border-ink-700 bg-ink-950 px-2 py-0.5 text-sm"
                   />
                 ) : (
-                  <button onClick={() => open(r.id)} onDoubleClick={() => setRenaming(r.id)} title="Double-click to rename" className="min-w-0 flex-1 text-left">
+                  <button onClick={() => open(r.id)} className="min-w-0 flex-1 text-left">
                     <span className="line-clamp-2 text-sm">{r.title || r.summary?.replace(/[#*\-]/g, "").trim() || r.first_note || "No summary yet"}</span>
                   </button>
                 )}
+                <button onClick={() => setRenaming(r.id)} className="rounded-md border border-ink-700 px-3 py-1 text-xs hover:text-white">Rename</button>
                 <button onClick={() => open(r.id)} className="rounded-md border border-ink-700 px-3 py-1 text-xs hover:text-white">Open</button>
                 <button
                   onClick={() => open(r.id).then(() => useStore.getState().start()).catch((e) => alert(String(e)))}

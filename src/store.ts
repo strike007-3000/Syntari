@@ -66,6 +66,7 @@ let lastInsightMs = 0;
 const seenInsightTexts = new Set<string>();
 // Notes whose category the user typed (dec:/act:/risk:); the model must not re-bucket these.
 const typedKinds = new Set<string>();
+const editedNotes = new Set<string>(); // manual text edits must survive a late model expansion
 const getDb = () => {
   if (!db) {
     db = Database.load("sqlite:syntari.db");
@@ -264,7 +265,7 @@ export const useStore = create<State>((set, get) => ({
               owner: n.owner ?? e.owner ?? undefined,
               due: n.due ?? e.due ?? undefined,
               status: "completed",
-              expanded: e.enhanced_text || n.raw,
+              expanded: editedNotes.has(n.id) ? n.expanded : e.enhanced_text || n.raw,
               citation: e.citation_quote
                 ? {
                     chunkIds: [],
@@ -280,8 +281,8 @@ export const useStore = create<State>((set, get) => ({
 
     persist((d) =>
       d.execute(
-        "UPDATE notes SET expanded=?, citation_quote=?, citation_chunks=?, kind=COALESCE(?, kind), owner=COALESCE(owner, ?), due=COALESCE(due, ?) WHERE id=?",
-        [e.enhanced_text, e.citation_quote ?? null, "[]", typedKinds.has(e.id) ? null : e.category ?? null, e.owner ?? null, e.due ?? null, e.id],
+        "UPDATE notes SET expanded=COALESCE(?, expanded), citation_quote=?, citation_chunks=?, kind=COALESCE(?, kind), owner=COALESCE(owner, ?), due=COALESCE(due, ?) WHERE id=?",
+        [editedNotes.has(e.id) ? null : e.enhanced_text, e.citation_quote ?? null, "[]", typedKinds.has(e.id) ? null : e.category ?? null, e.owner ?? null, e.due ?? null, e.id],
       ),
     );
   },
@@ -289,7 +290,7 @@ export const useStore = create<State>((set, get) => ({
   failExpansion(id) {
     set((s) => ({
       notes: s.notes.map((n) =>
-        n.id === id ? { ...n, status: "failed", expanded: n.raw } : n,
+        n.id === id ? { ...n, status: "failed", expanded: editedNotes.has(id) ? n.expanded : n.raw } : n,
       ),
     }));
   },
@@ -386,7 +387,8 @@ export const useStore = create<State>((set, get) => ({
   },
 
   editNote(id, text) {
-    typedKinds.add(id); // a manual edit beats a late model answer
+    typedKinds.add(id);
+    editedNotes.add(id);
     set((s) => ({ notes: s.notes.map((n) => (n.id === id ? { ...n, expanded: text } : n)) }));
     persist((d) => d.execute("UPDATE notes SET expanded=? WHERE id=?", [text, id]));
   },
