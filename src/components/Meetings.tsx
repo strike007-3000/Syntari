@@ -9,7 +9,8 @@ const dayLabel = (ms: number) => {
 };
 
 export default function Meetings() {
-  const { listSessions, loadSession, newMeeting, running, deleteSession } = useStore();
+  const { listSessions, loadSession, newMeeting, running, deleteSession, renameSession } = useStore();
+  const [renaming, setRenaming] = useState<number | null>(null);
   const [q, setQ] = useState("");
   const [rows, setRows] = useState<MeetingRow[]>([]);
   const refresh = () => listSessions(q).then(setRows).catch(() => setRows([]));
@@ -42,9 +43,20 @@ export default function Meetings() {
             {items.map((r) => (
               <li key={r.id} className="flex items-center gap-4 rounded-lg border border-ink-700 bg-ink-900 p-3">
                 <span className="font-mono text-xs text-slate-400">{new Date(r.started_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                <button onClick={() => open(r.id)} className="min-w-0 flex-1 text-left">
-                  <span className="line-clamp-2 text-sm">{r.summary?.replace(/[#*\-]/g, "").trim() || "No summary yet"}</span>
-                </button>
+                {renaming === r.id ? (
+                  <input
+                    autoFocus
+                    defaultValue={r.title ?? ""}
+                    placeholder="Meeting title"
+                    onBlur={(e) => { renameSession(r.id, e.target.value).then(refresh); setRenaming(null); }}
+                    onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setRenaming(null); }}
+                    className="min-w-0 flex-1 rounded border border-ink-700 bg-ink-950 px-2 py-0.5 text-sm"
+                  />
+                ) : (
+                  <button onClick={() => open(r.id)} onDoubleClick={() => setRenaming(r.id)} title="Double-click to rename" className="min-w-0 flex-1 text-left">
+                    <span className="line-clamp-2 text-sm">{r.title || r.summary?.replace(/[#*\-]/g, "").trim() || r.first_note || "No summary yet"}</span>
+                  </button>
+                )}
                 <button onClick={() => open(r.id)} className="rounded-md border border-ink-700 px-3 py-1 text-xs hover:text-white">Open</button>
                 <button
                   onClick={() => open(r.id).then(() => useStore.getState().start()).catch((e) => alert(String(e)))}

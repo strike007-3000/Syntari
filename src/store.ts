@@ -12,7 +12,7 @@ interface InsightItem {
   due?: string;
 }
 
-export interface MeetingRow { id: number; started_at: number; summary: string | null }
+export interface MeetingRow { id: number; started_at: number; summary: string | null; title: string | null; first_note: string | null }
 
 interface State {
   running: boolean;
@@ -53,6 +53,8 @@ interface State {
   dismissDbError: () => void;
   deleteSession: (id: number) => Promise<void>;
   deleteNote: (id: string) => void;
+  editNote: (id: string, text: string) => void;
+  renameSession: (id: number, title: string) => Promise<void>;
   backup: () => Promise<string>;
 }
 
@@ -126,7 +128,9 @@ export const useStore = create<State>((set, get) => ({
       }
     }
     try {
-      await invoke("start_syntari_session", { offsetMs: offset });
+      // chunks carry only their start time; reuse it as both bounds for the lookback window
+      const prior = resume ? get().transcript.map((c) => ({ start: c.ts / 1000, end: c.ts / 1000, speaker: c.speaker, text: c.text })) : [];
+      await invoke("start_syntari_session", { offsetMs: offset, prior });
     } catch (e) {
       if (db && !resume && sessionId !== null) await db.execute("DELETE FROM sessions WHERE id=?", [sessionId]).catch(() => {});
       throw e;
@@ -339,7 +343,9 @@ export const useStore = create<State>((set, get) => ({
   async listSessions(q = "") {
     const like = `%${q.trim()}%`;
     return (await getDb()).select(
-      `SELECT id, started_at, summary FROM sessions s WHERE ?1 = '%%' OR summary LIKE ?1
+      `SELECT id, started_at, summary, title,
+         (SELECT COALESCE(expanded, raw) FROM notes n WHERE n.session_id = s.id ORDER BY ts_ms LIMIT 1) AS first_note
+       FROM sessions s WHERE ?1 = '%%' OR summary LIKE ?1 OR title LIKE ?1
          OR EXISTS (SELECT 1 FROM notes n WHERE n.session_id = s.id AND (n.raw LIKE ?1 OR n.expanded LIKE ?1))
          OR EXISTS (SELECT 1 FROM transcript t WHERE t.session_id = s.id AND t.text LIKE ?1)
        ORDER BY started_at DESC LIMIT 200`,
@@ -377,6 +383,16 @@ export const useStore = create<State>((set, get) => ({
     const d = await getDb();
     await d.execute("DELETE FROM sessions WHERE id=?", [id]); // notes and transcript go with it via ON DELETE CASCADE, atomically
     if (get().sessionId === id) set({ sessionId: null, loaded: false, durationMs: 0, sessionElapsedSeconds: 0, notes: [], transcript: [], summary: "" });
+  },
+
+  editNote(id, text) {
+    typedKinds.add(id); // a manual edit beats a late model answer
+    set((s) => ({ notes: s.notes.map((n) => (n.id === id ? { ...n, expanded: text } : n)) }));
+    persist((d) => d.execute("UPDATE notes SET expanded=? WHERE id=?", [text, id]));
+  },
+
+  async renameSession(id, title) {
+    await (await getDb()).execute("UPDATE sessions SET title=? WHERE id=?", [title.trim() || null, id]);
   },
 
   deleteNote(id) {

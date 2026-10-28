@@ -1,3 +1,4 @@
+import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useStore } from "../store";
@@ -11,7 +12,8 @@ const SECTIONS: { kind: NoteKind; title: string; dot: string }[] = [
 ];
 
 function Item({ n }: { n: Note }) {
-  const { toggleDone, inspect, acceptSuggestion, dismissSuggestion, setKind, deleteNote, transcript } = useStore();
+  const { toggleDone, inspect, acceptSuggestion, dismissSuggestion, setKind, deleteNote, editNote, transcript } = useStore();
+  const [editing, setEditing] = useState(false);
   const body = n.expanded ?? n.raw;
 
   if (n.status === "suggested") {
@@ -30,8 +32,18 @@ function Item({ n }: { n: Note }) {
       {n.kind === "action" && (
         <input type="checkbox" checked={!!n.done} onChange={() => toggleDone(n.id)} className="mt-1" />
       )}
+      {editing ? (
+        <input
+          autoFocus
+          defaultValue={body}
+          onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== body) editNote(n.id, v); setEditing(false); }}
+          onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setEditing(false); }}
+          className="flex-1 rounded border border-ink-700 bg-ink-900 px-2 py-0.5 text-sm"
+        />
+      ) : (
       <button
         className="flex-1 text-left"
+        onDoubleClick={() => setEditing(true)}
         onClick={() => {
           if (n.citation?.start === undefined) return;
           // citations carry seconds, not chunk ids: jump to the nearest chunk by timestamp
@@ -49,6 +61,7 @@ function Item({ n }: { n: Note }) {
         {n.status === "pending" && <span className="ml-2 text-xs text-amber-400/80 animate-pulse">expanding…</span>}
         {n.status === "failed" && <span className="ml-2 text-xs text-rose-400/80">(failed)</span>}
       </button>
+      )}
       <select
         aria-label="Move to"
         value={n.kind}

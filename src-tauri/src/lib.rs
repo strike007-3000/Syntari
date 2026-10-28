@@ -27,7 +27,7 @@ fn models_ready(st: State<'_, AppState>) -> bool {
 }
 
 #[tauri::command]
-fn start_syntari_session(app: AppHandle, st: State<'_, AppState>, offset_ms: u64) -> Result<(), String> {
+fn start_syntari_session(app: AppHandle, st: State<'_, AppState>, offset_ms: u64, prior: Vec<ai::engine::TranscriptChunk>) -> Result<(), String> {
     if !models_loaded(&st) {
         return Err("AI models are still loading".into());
     }
@@ -35,7 +35,8 @@ fn start_syntari_session(app: AppHandle, st: State<'_, AppState>, offset_ms: u64
     if s.is_some() {
         return Err("session already running".into());
     }
-    st.tr.lock().unwrap().clear();
+    // On Continue, seed the previous transcript so notes typed right away still get lookback context
+    *st.tr.lock().unwrap() = prior;
     let t0 = Instant::now();
     let sess = audio::start(app, st.cap.clone(), st.tr.clone(), st.ai_engine.clone(), offset_ms as f64 / 1000.0)?;
     *s = Some((sess, t0));
@@ -248,6 +249,11 @@ pub fn run() {
         version: 2,
         description: "summary",
         sql: include_str!("../migrations/002_summary.sql"),
+        kind: MigrationKind::Up,
+    }, Migration {
+        version: 3,
+        description: "title",
+        sql: include_str!("../migrations/003_title.sql"),
         kind: MigrationKind::Up,
     }];
 

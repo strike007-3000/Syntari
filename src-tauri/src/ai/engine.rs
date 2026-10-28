@@ -85,26 +85,52 @@ fn free_bytes(dir: &Path) -> Option<u64> {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct HashEntry { sha: String, size: u64, mtime_ns: u128 }
+
 /// Trust-on-first-use integrity check: hashes are recorded after the download and re-checked
-/// on every launch, so corruption or tampering of the weights is caught.
+/// on launch, so corruption or tampering of the weights is caught. A file whose size and mtime
+/// match the manifest is not re-hashed (multi-GB hashing delayed every start).
 /// shortcut: no upstream-pinned hashes (the SDK doesn't publish any); pin them here when available.
+/// shortcut: same-size in-place edits that preserve mtime go undetected, hash always if that matters.
 async fn verify_integrity(model: &Model, name: &str) -> Result<(), String> {
     let dir = model.path().await.map_err(|e| format!("{name}: {e}"))?;
     tokio::task::spawn_blocking(move || {
         use sha2::{Digest, Sha256};
+        use std::collections::BTreeMap;
         let manifest = dir.join(".syntari-sha256");
-        let mut current = std::collections::BTreeMap::new();
+        let raw = std::fs::read_to_string(&manifest).ok();
+        let saved: Option<BTreeMap<String, HashEntry>> = raw.as_deref().and_then(|r| serde_json::from_str(r).ok());
+        // pre-mtime manifests were a plain path -> sha map; still honoured, then upgraded below
+        let legacy: Option<BTreeMap<String, String>> = raw.as_deref().and_then(|r| serde_json::from_str(r).ok());
+        let mut current = BTreeMap::new();
         for e in walkdir::WalkDir::new(&dir).sort_by_file_name().into_iter().filter_map(Result::ok) {
             if !e.file_type().is_file() || e.path() == manifest { continue; }
-            let mut h = Sha256::new();
-            std::io::copy(&mut std::fs::File::open(e.path()).map_err(|e| e.to_string())?, &mut h).map_err(|e| e.to_string())?;
             let rel = e.path().strip_prefix(&dir).unwrap().to_string_lossy().into_owned();
-            current.insert(rel, format!("{:x}", h.finalize()));
+            let meta = e.metadata().map_err(|e| e.to_string())?;
+            let size = meta.len();
+            let mtime_ns = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+            let sha = match saved.as_ref().and_then(|m| m.get(&rel)) {
+                Some(p) if p.size == size && p.mtime_ns == mtime_ns => p.sha.clone(),
+                _ => {
+                    let mut h = Sha256::new();
+                    std::io::copy(&mut std::fs::File::open(e.path()).map_err(|e| e.to_string())?, &mut h).map_err(|e| e.to_string())?;
+                    format!("{:x}", h.finalize())
+                }
+            };
+            current.insert(rel, HashEntry { sha, size, mtime_ns });
         }
-        match std::fs::read_to_string(&manifest) {
-            Ok(saved) if serde_json::from_str::<std::collections::BTreeMap<String, String>>(&saved).ok().as_ref() == Some(&current) => Ok(()),
-            Ok(_) => Err("model files changed since download (corrupt or tampered); delete the model folder to re-download".to_string()),
-            Err(_) => std::fs::write(&manifest, serde_json::to_string(&current).unwrap()).map_err(|e| e.to_string()),
+        let write = |m: &BTreeMap<String, HashEntry>| std::fs::write(&manifest, serde_json::to_string(m).unwrap()).map_err(|e| e.to_string());
+        let shas: BTreeMap<&String, &String> = current.iter().map(|(k, v)| (k, &v.sha)).collect();
+        let expected: Option<BTreeMap<&String, &String>> = match (&saved, &legacy) {
+            (Some(m), _) => Some(m.iter().map(|(k, v)| (k, &v.sha)).collect()),
+            (None, Some(m)) => Some(m.iter().collect()),
+            _ => None,
+        };
+        match expected {
+            Some(exp) if exp == shas => if saved.is_none() { write(&current) } else { Ok(()) },
+            Some(_) => Err("model files changed since download (corrupt or tampered); delete the model folder to re-download".to_string()),
+            None => write(&current),
         }
     })
     .await
