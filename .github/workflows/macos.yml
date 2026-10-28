@@ -7,7 +7,7 @@ permissions:
   contents: read
 jobs:
   build:
-    runs-on: macos-14 # Apple Silicon
+    runs-on: macos-15 # Apple Silicon
     env:
       # Only app builds need the SDK's build.rs to download libfoundry_local.dylib; keep in step with the foundry-local-sdk crate version.
       FOUNDRY_LOCAL_RUNTIME_VERSION: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && '2.1.0' || '' }}

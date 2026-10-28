@@ -201,7 +201,7 @@ npm run tauri dev
 
 ## 8. Known Limitations & Troubleshooting
 
-* **First launch is slow:** ~4 GB of models download once (progress in the header). The app first checks for ~4.5 GB of free disk and stops with a clear message if there is less. Every launch then hashes the weights, during which the header shows "Verifying local models…" and Start stays disabled. Transcription is unavailable until it finishes.
+* **First launch is slow:** ~4 GB of models download once (progress in the header). The app first checks for free disk (~1 GB for whisper-small, ~4.2 GB for phi-4-mini) and stops with a clear message if there is less. Every launch then hashes the weights, during which the header shows "Verifying local models…" and Start stays disabled. Transcription is unavailable until it finishes.
 * **Transcript accuracy:** speech is cut on silence gaps (3 s minimum, 12 s maximum) and transcribed by whisper-small. Larger models (`whisper-medium`, `whisper-large-v3-turbo`) are in the Foundry catalog but not wired up. Non-speech tags like `(soft music)` are discarded.
 * **You-track during remote audio:** the mic track is kept while system audio plays only if its energy after echo cancellation exceeds 0.005 RMS (`audio/mod.rs`). The threshold (`BLEED_RMS`) is untuned; each window logs `[Bleed] mic residual RMS` to help tune it. Speaker bleed may be transcribed as "You" or quiet speech dropped. Use headphones for best results.
 * **Exit behaviour:** Foundry's native runtime aborts in a C++ destructor on normal process exit (macOS "quit unexpectedly" dialog). Syntari stops the session and then exits with `_exit(0)` (macOS/Linux) or `TerminateProcess` (Windows) to skip it.

@@ -374,9 +374,7 @@ export const useStore = create<State>((set, get) => ({
 
   async deleteSession(id) {
     const d = await getDb();
-    await d.execute("DELETE FROM transcript WHERE session_id=?", [id]);
-    await d.execute("DELETE FROM notes WHERE session_id=?", [id]);
-    await d.execute("DELETE FROM sessions WHERE id=?", [id]);
+    await d.execute("DELETE FROM sessions WHERE id=?", [id]); // notes and transcript go with it via ON DELETE CASCADE, atomically
     if (get().sessionId === id) set({ sessionId: null, loaded: false, durationMs: 0, sessionElapsedSeconds: 0, notes: [], transcript: [], summary: "" });
   },
 

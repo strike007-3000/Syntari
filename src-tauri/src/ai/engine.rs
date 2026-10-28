@@ -46,14 +46,14 @@ pub struct FoundryEngine {
 
 /// The only network access in the app: one-time model download when the cache is empty.
 /// Manual update: delete the model folder (or drop files in `SYNTARI_MODELS_DIR`) and restart.
-async fn ensure_cached(model: &Model, name: &str, progress: &Progress, models_dir: &Path) -> Result<(), String> {
+async fn ensure_cached(model: &Model, name: &str, progress: &Progress, models_dir: &Path, need: u64) -> Result<(), String> {
     if !model.is_cached().await.unwrap_or(false) {
         let _ = std::fs::create_dir_all(models_dir);
         match free_bytes(models_dir) {
-            Some(free) if free < MIN_FREE_BYTES => {
+            Some(free) if free < need => {
                 return Err(format!(
-                    "Not enough disk space to download {name}: {:.1} GB free, about 4.5 GB needed. Free some space and restart.",
-                    free as f64 / 1e9
+                    "Not enough disk space to download {name}: {:.1} GB free, about {:.1} GB needed. Free some space and restart.",
+                    free as f64 / 1e9, need as f64 / 1e9
                 ));
             }
             _ => {}
@@ -64,7 +64,7 @@ async fn ensure_cached(model: &Model, name: &str, progress: &Progress, models_di
     verify_integrity(model, name).await
 }
 
-const MIN_FREE_BYTES: u64 = 4_500_000_000;
+// download size plus headroom, checked per model so a fresh install with ~4.7 GB free still passes both
 
 /// Free space on the volume holding `dir`; None if it can't be determined (then the download proceeds).
 fn free_bytes(dir: &Path) -> Option<u64> {
@@ -173,7 +173,7 @@ impl FoundryEngine {
             .map_err(|e| format!("Whisper model lookup failed: {e}"))?;
 
         // Fail-safe check: Model must be pre-packaged in resource directory
-        ensure_cached(&speech_model, "whisper-small", &progress, &models_dir).await?;
+        ensure_cached(&speech_model, "whisper-small", &progress, &models_dir, 1_000_000_000).await?;
 
         speech_model
             .load()
@@ -190,7 +190,7 @@ impl FoundryEngine {
             .await
             .map_err(|e| format!("Chat model lookup failed: {e}"))?;
 
-        ensure_cached(&chat_model, "phi-4-mini", &progress, &models_dir).await?;
+        ensure_cached(&chat_model, "phi-4-mini", &progress, &models_dir, 4_200_000_000).await?;
 
         chat_model
             .load()
