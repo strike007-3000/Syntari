@@ -46,11 +46,43 @@ pub struct FoundryEngine {
 
 /// The only network access in the app: one-time model download when the cache is empty.
 /// Manual update: delete the model folder (or drop files in `SYNTARI_MODELS_DIR`) and restart.
-async fn ensure_cached(model: &Model, name: &str, progress: &Progress) -> Result<(), String> {
+async fn ensure_cached(model: &Model, name: &str, progress: &Progress, models_dir: &Path, need: u64) -> Result<(), String> {
     if !model.is_cached().await.unwrap_or(false) {
+        let _ = std::fs::create_dir_all(models_dir);
+        match free_bytes(models_dir) {
+            Some(free) if free < need => {
+                return Err(format!(
+                    "Not enough disk space to download {name}: {:.1} GB free, about {:.1} GB needed. Free some space and restart.",
+                    free as f64 / 1e9, need as f64 / 1e9
+                ));
+            }
+            _ => {}
+        }
         download(model, name, progress).await?;
     }
+    progress(name, -1.0); // negative = "verifying" (the UI shows a status instead of a percentage)
     verify_integrity(model, name).await
+}
+
+// download size plus headroom, checked per model so a fresh install with ~4.7 GB free still passes both
+
+/// Free space on the volume holding `dir`; None if it can't be determined (then the download proceeds).
+fn free_bytes(dir: &Path) -> Option<u64> {
+    #[cfg(unix)]
+    unsafe {
+        let c = std::ffi::CString::new(dir.to_str()?).ok()?;
+        let mut st: libc::statvfs = std::mem::zeroed();
+        (libc::statvfs(c.as_ptr(), &mut st) == 0).then(|| st.f_bavail as u64 * st.f_frsize as u64)
+    }
+    #[cfg(windows)]
+    unsafe {
+        extern "system" {
+            fn GetDiskFreeSpaceExW(dir: *const u16, avail: *mut u64, total: *mut u64, free: *mut u64) -> i32;
+        }
+        let w: Vec<u16> = dir.as_os_str().to_str()?.encode_utf16().chain(Some(0)).collect();
+        let mut avail = 0u64;
+        (GetDiskFreeSpaceExW(w.as_ptr(), &mut avail, std::ptr::null_mut(), std::ptr::null_mut()) != 0).then_some(avail)
+    }
 }
 
 /// Trust-on-first-use integrity check: hashes are recorded after the download and re-checked
@@ -121,23 +153,11 @@ impl FoundryEngine {
             .log_level(LogLevel::Info)
             .model_cache_dir(models_dir_str);
 
-        // Auto-detect native library location if not provided in environment
+        // Default lookup: FOUNDRY_NATIVE_DIR baked in by the SDK build (needs FOUNDRY_LOCAL_RUNTIME_VERSION), then next to the executable.
         if let Ok(lib_dir) = std::env::var("FOUNDRY_LOCAL_LIB_DIR") {
             let lib_path = PathBuf::from(lib_dir).join(format!("{}foundry_local{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX));
             if lib_path.exists() {
                 config = config.library_path(lib_path.to_string_lossy());
-            }
-        } else {
-            let candidates = [
-                "/opt/homebrew/Cellar/foundrylocal/0.11.0_1/libexec/libfoundry_local.dylib",
-                "/opt/homebrew/lib/libfoundry_local.dylib",
-                "/usr/local/lib/libfoundry_local.dylib",
-            ];
-            for candidate in candidates {
-                if Path::new(candidate).exists() {
-                    config = config.library_path(candidate);
-                    break;
-                }
             }
         }
 
@@ -153,7 +173,7 @@ impl FoundryEngine {
             .map_err(|e| format!("Whisper model lookup failed: {e}"))?;
 
         // Fail-safe check: Model must be pre-packaged in resource directory
-        ensure_cached(&speech_model, "whisper-small", &progress).await?;
+        ensure_cached(&speech_model, "whisper-small", &progress, &models_dir, 1_000_000_000).await?;
 
         speech_model
             .load()
@@ -170,7 +190,7 @@ impl FoundryEngine {
             .await
             .map_err(|e| format!("Chat model lookup failed: {e}"))?;
 
-        ensure_cached(&chat_model, "phi-4-mini", &progress).await?;
+        ensure_cached(&chat_model, "phi-4-mini", &progress, &models_dir, 4_200_000_000).await?;
 
         chat_model
             .load()
@@ -551,5 +571,13 @@ fn parse_action_line(s: &str) -> (String, String, Option<String>) {
         (owner, task, Some(due))
     } else {
         (owner, task_part.to_string(), None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn free_bytes_reads_the_temp_volume() {
+        assert!(super::free_bytes(&std::env::temp_dir()).is_some_and(|b| b > 0));
     }
 }

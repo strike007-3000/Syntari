@@ -23,6 +23,8 @@ const MAX_BUF: usize = 16_000 * 30; // circular cap: 30 s per track, RAM only
 // Samples kept in the ring buffer after each window drain to give Whisper sentence context.
 const OVERLAP_SAMPLES: usize = 8_000; // 0.5 s @ 16 kHz
 
+const BLEED_RMS: f32 = 0.005; // min post-AEC mic energy to count as "You" while system audio plays
+
 #[derive(Default)]
 pub struct Capture {
     pub mic: Mutex<VecDeque<f32>>,
@@ -47,18 +49,35 @@ impl Capture {
 }
 
 fn open(dev: &cpal::Device, cfg: &cpal::SupportedStreamConfig, cap: Arc<Capture>, is_mic: bool) -> Result<cpal::Stream, String> {
-    if cfg.sample_format() != cpal::SampleFormat::F32 {
-        return Err(format!("unsupported sample format {:?}", cfg.sample_format()));
+    use cpal::SampleFormat as F;
+    match cfg.sample_format() {
+        F::F32 => open_as::<f32>(dev, cfg, cap, is_mic),
+        F::I16 => open_as::<i16>(dev, cfg, cap, is_mic),
+        F::U16 => open_as::<u16>(dev, cfg, cap, is_mic),
+        F::I32 => open_as::<i32>(dev, cfg, cap, is_mic),
+        f => Err(format!("unsupported sample format {f:?}")),
     }
+}
+
+/// Many USB mics and Windows devices default to integer formats; samples are converted to f32 in the callback.
+fn open_as<T: cpal::SizedSample + Send + 'static>(
+    dev: &cpal::Device,
+    cfg: &cpal::SupportedStreamConfig,
+    cap: Arc<Capture>,
+    is_mic: bool,
+) -> Result<cpal::Stream, String>
+where
+    f32: cpal::FromSample<T>,
+{
     let ch = cfg.channels() as usize;
     let mut rs = dsp::Resampler::new(cfg.sample_rate().0 as f64);
     let mut out = Vec::new();
     let s = dev
         .build_input_stream(
             &cfg.config(),
-            move |d: &[f32], _| {
+            move |d: &[T], _| {
                 out.clear();
-                rs.push(d.chunks(ch).map(|f| f.iter().sum::<f32>() / ch as f32), &mut out);
+                rs.push(d.chunks(ch).map(|f| f.iter().map(|&x| cpal::Sample::to_sample::<f32>(x)).sum::<f32>() / ch as f32), &mut out);
                 let (buf, lvl) = if is_mic { (&cap.mic, &cap.mic_lvl) } else { (&cap.sys, &cap.sys_lvl) };
                 lvl.store(dsp::rms(&out).to_bits(), Ordering::Relaxed);
                 let mut b = buf.lock().unwrap();
@@ -128,7 +147,7 @@ pub fn start(
         let host = cpal::default_host();
         let mic = host
             .default_input_device()
-            .ok_or_else(|| "no microphone found / permission denied".to_string())
+            .ok_or_else(|| "Microphone unavailable: none found, or access was denied. Allow microphone access for Syntari in your system privacy settings.".to_string())
             .and_then(|d| {
                 let c = d.default_input_config().map_err(|e| e.to_string())?;
                 open(&d, &c, cap.clone(), true)
@@ -221,12 +240,13 @@ pub fn start(
                 sys_done += sys_new;
                 mic_done += mic_new;
                 // Echo-suppressed mic energy: bleed is cancelled to near zero, real speech survives.
-                // shortcut: threshold is a guess, tune on real hardware.
+                // shortcut: threshold is a guess, tune on real hardware using the [Bleed] log lines.
                 let mic_residual = dsp::rms(&mic);
                 let sys_active = dsp::rms(&sys) > 0.01;
+                if sys_active { eprintln!("[Bleed] mic residual RMS {mic_residual:.5} (kept if >= {BLEED_RMS})"); } // tuning aid for the README section 10 checklist
                 for (speaker, pcm, begin) in [("Remote", &mut sys, sys_start), ("You", &mut mic, mic_start)] {
                     // While system audio plays, keep the mic only if it still has energy after AEC + ducking.
-                    if speaker == "You" && sys_active && mic_residual < 0.005 { continue; }
+                    if speaker == "You" && sys_active && mic_residual < BLEED_RMS { continue; }
                     let rms = dsp::rms(pcm);
                     let is_speech = dsp::is_speech(pcm);
                     if speaker == "Remote" && is_speech {

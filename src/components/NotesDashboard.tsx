@@ -11,7 +11,7 @@ const SECTIONS: { kind: NoteKind; title: string; dot: string }[] = [
 ];
 
 function Item({ n }: { n: Note }) {
-  const { toggleDone, inspect, acceptSuggestion, dismissSuggestion, setKind, transcript } = useStore();
+  const { toggleDone, inspect, acceptSuggestion, dismissSuggestion, setKind, deleteNote, transcript } = useStore();
   const body = n.expanded ?? n.raw;
 
   if (n.status === "suggested") {
@@ -57,6 +57,11 @@ function Item({ n }: { n: Note }) {
       >
         {SECTIONS.map((s) => <option key={s.kind} value={s.kind}>{s.title}</option>)}
       </select>
+      <button
+        aria-label="Delete note"
+        onClick={() => confirm("Delete this note?") && deleteNote(n.id)}
+        className="self-start rounded px-1 text-xs text-rose-400 opacity-0 focus:opacity-100 group-hover:opacity-100"
+      >✕</button>
       {n.citation?.quote && (
         <div className="pointer-events-none absolute left-6 top-full z-10 hidden w-96 rounded border border-ink-700 bg-ink-950 p-2 text-xs italic shadow-lg group-hover:block">
           "{n.citation.quote}"

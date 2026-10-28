@@ -49,6 +49,11 @@ interface State {
   dismissSuggestion: (id: string) => void;
   listSessions: (q?: string) => Promise<MeetingRow[]>;
   loadSession: (id: number) => Promise<void>;
+  dbError: string | null; // set when a write fails, so the UI can warn instead of silently losing data
+  dismissDbError: () => void;
+  deleteSession: (id: number) => Promise<void>;
+  deleteNote: (id: string) => void;
+  backup: () => Promise<string>;
 }
 
 let db: Promise<Database> | null = null;
@@ -65,7 +70,12 @@ const getDb = () => {
   }
   return db;
 };
-const persist = (fn: (d: Database) => Promise<unknown>) => getDb().then(fn).catch((e) => console.error("db", e));
+const persist = (fn: (d: Database) => Promise<unknown>) =>
+  getDb().then(fn).catch((e) => {
+    console.error("db", e);
+    db = null; // allow a retry if opening the database was what failed
+    useStore.setState({ dbError: String(e) });
+  });
 
 export const useStore = create<State>((set, get) => ({
   running: false,
@@ -112,6 +122,7 @@ export const useStore = create<State>((set, get) => ({
         sessionId = (await db.execute("INSERT INTO sessions (started_at) VALUES (?)", [startedAt])).lastInsertId ?? null;
       } catch (e) {
         console.error("db", e);
+        set({ dbError: String(e) });
       }
     }
     try {
@@ -239,6 +250,7 @@ export const useStore = create<State>((set, get) => ({
   },
 
   applyExpansion(e) {
+    if (!get().notes.some((n) => n.id === e.id)) return; // note was deleted while the model ran
     set((s) => ({
       notes: s.notes.map((n) =>
         n.id === e.id
@@ -356,6 +368,27 @@ export const useStore = create<State>((set, get) => ({
       })),
       transcript: chunks.map((r) => ({ id: r.chunk_id, speaker: r.speaker, text: r.text, ts: r.ts_ms })),
     });
+  },
+
+  dbError: null,
+  dismissDbError: () => set({ dbError: null }),
+
+  async deleteSession(id) {
+    const d = await getDb();
+    await d.execute("DELETE FROM sessions WHERE id=?", [id]); // notes and transcript go with it via ON DELETE CASCADE, atomically
+    if (get().sessionId === id) set({ sessionId: null, loaded: false, durationMs: 0, sessionElapsedSeconds: 0, notes: [], transcript: [], summary: "" });
+  },
+
+  deleteNote(id) {
+    set((s) => ({ notes: s.notes.filter((n) => n.id !== id) }));
+    persist((d) => d.execute("DELETE FROM notes WHERE id=?", [id]));
+  },
+
+  async backup() {
+    const path = await invoke<string>("backup_path");
+    await (await getDb()).execute("VACUUM INTO ?", [path]);
+    await invoke("reveal_path", { path });
+    return path;
   },
 
   setLevels: (levels) => set({ levels }),
