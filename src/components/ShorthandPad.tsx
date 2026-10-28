@@ -40,8 +40,8 @@ export default function ShorthandPad() {
           <div className="p-2 text-slate-500">Type a note and press Enter. It's filed automatically.</div>
         ) : (
           notes.map((n) => {
-            const isCompleted = n.status === "completed" || !!n.expanded;
-            const isFailed = n.status === "failed";
+            const isFailed = n.status === "failed"; // failExpansion fills expanded with raw, so check failure first
+            const isCompleted = !isFailed && (n.status === "completed" || !!n.expanded);
             return (
               <div key={n.id} className="flex items-start justify-between gap-2 rounded bg-ink-900/60 p-2">
                 <div className="flex-1 break-words">
