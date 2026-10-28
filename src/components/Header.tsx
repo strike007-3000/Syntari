@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Shield, Mic, Speaker, Play, Square, AlertTriangle } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import { useStore } from "../store";
 import { fmtClock } from "../types";
 import { toMarkdown } from "./NotesDashboard";
@@ -16,7 +17,9 @@ const Meter = ({ label, icon, v }: { label: string; icon: React.ReactNode; v: nu
 );
 
 export default function Header() {
-  const { running, sessionElapsedSeconds, levels, start, stop, tickTimer, setScreen, loaded, notes, summary } = useStore();
+  const { running, sessionElapsedSeconds, levels, start, stop, tickTimer, setScreen, loaded, notes, summary, dbError, dismissDbError, backup } = useStore();
+  const [version, setVersion] = useState("");
+  useEffect(() => { getVersion().then(setVersion).catch(() => {}); }, []);
   const [hasSystemAudio, setHasSystemAudio] = useState<boolean | null>(null);
 
   // null = no status line; string = status line for the one-time model download or an init error
@@ -26,7 +29,7 @@ export default function Header() {
   useEffect(() => {
     const subs = [
       listen<{ name: string; percent: number }>("model-progress", (e) =>
-        setModelMsg(`Downloading ${e.payload.name} (one-time) ${Math.round(e.payload.percent)}%`)),
+        setModelMsg(e.payload.percent < 0 ? "Verifying local models…" : `Downloading ${e.payload.name} (one-time) ${Math.round(e.payload.percent)}%`)),
       listen("models-ready", () => { setModelMsg(null); setModelsReady(true); }),
       listen<string>("model-error", (e) => setModelMsg(`AI unavailable: ${e.payload}`)),
     ];
@@ -54,6 +57,7 @@ export default function Header() {
     <header className="flex items-center justify-between gap-4 whitespace-nowrap border-b border-ink-700 bg-ink-900 px-4 py-2">
       <div className="flex min-w-0 items-center gap-3">
         <h1 className="text-lg font-semibold tracking-wide">Syntari</h1>
+        {version && <span className="font-mono text-xs text-slate-500" title="Compare with the latest GitHub Release">v{version}</span>}
         <span title="No audio or text leaves your device" className="flex items-center gap-1 rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-xs text-emerald-400">
           <Shield size={12} /> On-device only
         </span>
@@ -65,6 +69,16 @@ export default function Header() {
         </span>
         {modelMsg && (
           <span className="rounded-full border border-amber-500/30 bg-amber-500/15 px-2.5 py-0.5 text-xs text-amber-400">{modelMsg}</span>
+        )}
+        {dbError && (
+          <button
+            type="button"
+            onClick={dismissDbError}
+            className="flex items-center gap-1 rounded-full border border-red-500/40 bg-red-500/15 px-2.5 py-0.5 text-xs font-medium text-red-400"
+            title={`${dbError}\n\nClick to dismiss.`}
+          >
+            <AlertTriangle size={13} /> Database error: recent changes may not be saved. Export notes now (click to dismiss)
+          </button>
         )}
         {hasSystemAudio === false && (
           <button
@@ -101,13 +115,32 @@ export default function Header() {
             >
               Export .md
             </button>
+            <button
+              onClick={() => backup().catch((e) => alert(`Backup failed: ${e}`))}
+              className="rounded-md border border-ink-700 bg-ink-800 px-2.5 py-1 text-xs text-slate-300 transition-colors hover:text-white"
+              title="Save a copy of the whole meetings database to your Downloads folder"
+            >
+              Back up DB
+            </button>
+            <button
+              onClick={() => invoke("open_logs").catch((e) => alert(String(e)))}
+              className="rounded-md border border-ink-700 bg-ink-800 px-2.5 py-1 text-xs text-slate-300 transition-colors hover:text-white"
+              title="Open the log folder (attach syntari.log to bug reports)"
+            >
+              Logs
+            </button>
           </>
         )}
         <span className="font-mono text-sm font-semibold tracking-wider text-slate-200">
           [{fmtClock(sessionElapsedSeconds * 1000)}]
         </span>
         <button
-          onClick={() => (running ? stop() : start()).catch((e) => alert(String(e)))}
+          onClick={() => (running ? stop() : start()).catch((e) => {
+            const msg = String(e);
+            // mic denied: offer the OS privacy page instead of a dead-end alert
+            if (/microphone/i.test(msg) && confirm(`${msg}\n\nOpen the microphone privacy settings?`)) invoke("open_system_settings", { pane: "microphone" });
+            else if (!/microphone/i.test(msg)) alert(msg);
+          })}
           disabled={!running && !modelsReady}
           title={!running && !modelsReady ? "Waiting for AI models to load" : undefined}
           className={`flex items-center gap-1.5 rounded-md px-4 py-1.5 text-sm font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${

@@ -9,10 +9,15 @@ const dayLabel = (ms: number) => {
 };
 
 export default function Meetings() {
-  const { listSessions, loadSession, newMeeting, running } = useStore();
+  const { listSessions, loadSession, newMeeting, running, deleteSession } = useStore();
   const [q, setQ] = useState("");
   const [rows, setRows] = useState<MeetingRow[]>([]);
-  useEffect(() => { listSessions(q).then(setRows).catch(() => setRows([])); }, [q, listSessions]);
+  const refresh = () => listSessions(q).then(setRows).catch(() => setRows([]));
+  useEffect(() => { refresh(); }, [q, listSessions]);
+  const remove = (id: number) => {
+    if (confirm("Delete this meeting, its notes and its transcript? This cannot be undone."))
+      deleteSession(id).then(refresh).catch((e) => alert(`Delete failed: ${e}`));
+  };
 
   const groups = rows.reduce<Record<string, MeetingRow[]>>((g, r) => ((g[dayLabel(r.started_at)] ??= []).push(r), g), {});
   const open = (id: number) => loadSession(id).catch((e) => alert(String(e)));
@@ -46,6 +51,7 @@ export default function Meetings() {
                   disabled={running}
                   className="rounded-md bg-accent/20 px-3 py-1 text-xs font-semibold text-accent hover:bg-accent/30 disabled:opacity-50"
                 >Continue</button>
+                <button onClick={() => remove(r.id)} disabled={running} className="rounded-md px-2 py-1 text-xs text-rose-400 hover:bg-rose-500/10 disabled:opacity-50" aria-label="Delete meeting">Delete</button>
               </li>
             ))}
           </ul>

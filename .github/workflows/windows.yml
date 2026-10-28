@@ -18,7 +18,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: src-tauri }
-      - run: choco install nasm -y --no-progress && echo "C:\Program Files\NASM" >> $env:GITHUB_PATH # SQLCipher's vendored OpenSSL
       - run: npm ci
       - run: npm run tsc
       - run: npm test
@@ -80,8 +79,6 @@ jobs:
         run: |
           exe=$(find installer -name '*.exe' | head -n1)
           # a rerun keeps run_number, so replace the asset instead of failing on the existing release
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$exe" --clobber
-          else
-            gh release create "$TAG" "$exe" --prerelease --target "${{ github.sha }}" --title "$TAG" --notes "Unsigned test installer from ${{ github.ref_name }} @ ${{ github.sha }}. SmartScreen: More info > Run anyway."
-          fi
+          # the macOS workflow publishes to the same tag, so tolerate losing the create race
+          gh release create "$TAG" "$exe" --prerelease --target "${{ github.sha }}" --title "$TAG" --notes "Unsigned test build from ${{ github.ref_name }} @ ${{ github.sha }}. SmartScreen: More info > Run anyway." \
+            || gh release upload "$TAG" "$exe" --clobber

@@ -1,0 +1,75 @@
+name: macos
+on:
+  push: { branches: [main], tags: ['v*'] } # a v* tag builds and publishes a pre-release
+  pull_request:
+  workflow_dispatch: # manual run also builds the app and uploads the dmg as an artifact
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-14 # Apple Silicon
+    env:
+      # Only app builds need the SDK's build.rs to download libfoundry_local.dylib; keep in step with the foundry-local-sdk crate version.
+      FOUNDRY_LOCAL_RUNTIME_VERSION: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && '2.1.0' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: src-tauri }
+      - run: npm ci
+      - run: npm run tsc
+      - run: npm test
+      - run: npm run build
+      - run: cargo check
+        working-directory: src-tauri
+      - run: cargo test
+        working-directory: src-tauri
+      - name: Stage Foundry runtime dylibs next to the executable (MIT; see src-tauri/licenses)
+        if: env.FOUNDRY_LOCAL_RUNTIME_VERSION != ''
+        run: |
+          # The SDK's build.rs downloads libfoundry_local.dylib + ONNX Runtime/GenAI into its OUT_DIR.
+          lib=$(find src-tauri/target -name libfoundry_local.dylib | head -n1)
+          [ -n "$lib" ] || { echo "libfoundry_local.dylib not found in build output"; exit 1; }
+          # ad-hoc signing ("-") is required for arm64 binaries to launch; there is no paid Developer ID
+          files='{}'
+          for f in "$(dirname "$lib")"/*.dylib; do
+            files=$(echo "$files" | jq --arg f "$(realpath "$f")" --arg n "MacOS/$(basename "$f")" '. + {($n): $f}')
+          done
+          echo "$files" | jq '{bundle: {targets: ["app", "dmg"], resources: {"licenses/*": "licenses/"}, macOS: {signingIdentity: "-", files: .}}}' > src-tauri/tauri.macos-bundle.conf.json
+          cat src-tauri/tauri.macos-bundle.conf.json
+      - if: env.FOUNDRY_LOCAL_RUNTIME_VERSION != ''
+        run: npm run tauri build -- --config src-tauri/tauri.macos-bundle.conf.json
+      - name: Verify the app contains the runtime
+        if: env.FOUNDRY_LOCAL_RUNTIME_VERSION != ''
+        run: |
+          ls src-tauri/target/release/bundle/macos/Syntari.app/Contents/MacOS
+          test -f src-tauri/target/release/bundle/macos/Syntari.app/Contents/MacOS/libfoundry_local.dylib
+          codesign --verify --deep src-tauri/target/release/bundle/macos/Syntari.app
+      - if: env.FOUNDRY_LOCAL_RUNTIME_VERSION != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: syntari-macos
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+  publish:
+    needs: build
+    if: (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # only this job can write; the build job runs third-party actions read-only
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('macos-build-{0}', github.run_number) }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: syntari-macos
+          path: installer
+      - name: Publish the dmg as a pre-release
+        run: |
+          dmg=$(find installer -name '*.dmg' | head -n1)
+          # the windows workflow publishes to the same tag, so tolerate losing the create race
+          gh release create "$TAG" "$dmg" --prerelease --target "${{ github.sha }}" --title "$TAG" --notes "Unsigned test build from ${{ github.ref_name }} @ ${{ github.sha }}. Gatekeeper: right-click > Open, or run xattr -dr com.apple.quarantine /Applications/Syntari.app" \
+            || gh release upload "$TAG" "$dmg" --clobber

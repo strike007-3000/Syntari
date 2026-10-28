@@ -42,18 +42,74 @@ fn start_syntari_session(app: AppHandle, st: State<'_, AppState>, offset_ms: u64
     Ok(())
 }
 
+fn downloads_file(name: &str) -> Result<PathBuf, String> {
+    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).map_err(|e| e.to_string())?;
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_secs();
+    Ok(PathBuf::from(home).join("Downloads").join(name.replace("{secs}", &secs.to_string())))
+}
+
+/// Opens a folder, or reveals a file in Finder/Explorer.
+fn open_path(path: &std::path::Path) {
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").args(if path.is_dir() { vec![] } else { vec!["-R"] }).arg(path).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("explorer")
+        .arg(if path.is_dir() { path.display().to_string() } else { format!("/select,{}", path.display()) })
+        .spawn();
+}
+
 /// Writes the notes to ~/Downloads and reveals the file in Finder.
 #[tauri::command]
 fn export_markdown(content: String) -> Result<String, String> {
-    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).map_err(|e| e.to_string())?;
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_secs();
-    let path = std::path::Path::new(&home).join("Downloads").join(format!("syntari-notes-{secs}.md"));
+    let path = downloads_file("syntari-notes-{secs}.md")?;
     std::fs::write(&path, content).map_err(|e| e.to_string())?;
-    #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg("-R").arg(&path).spawn();
-    #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn();
+    open_path(&path);
     Ok(path.to_string_lossy().into_owned())
+}
+
+/// Destination for a database backup; the frontend writes it with `VACUUM INTO` (a plain file copy would miss WAL data).
+#[tauri::command]
+fn backup_path() -> Result<String, String> {
+    Ok(downloads_file("syntari-backup-{secs}.db")?.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn reveal_path(path: String) {
+    open_path(std::path::Path::new(&path));
+}
+
+#[tauri::command]
+fn open_logs(app: AppHandle) -> Result<(), String> {
+    open_path(&app.path().app_log_dir().map_err(|e| e.to_string())?);
+    Ok(())
+}
+
+/// Release builds append stderr (our `eprintln!`s, panics, Foundry's native logs) to a log file testers can send back.
+fn init_logging(dir: &std::path::Path) {
+    if cfg!(debug_assertions) { return; }
+    let _ = std::fs::create_dir_all(dir);
+    let path = dir.join("syntari.log");
+    if std::fs::metadata(&path).map(|m| m.len() > 5_000_000).unwrap_or(false) {
+        let _ = std::fs::remove_file(&path); // shortcut: truncate instead of rotating
+    }
+    let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else { return };
+    #[cfg(unix)]
+    unsafe { libc::dup2(std::os::fd::AsRawFd::as_raw_fd(&f), 2); }
+    #[cfg(windows)]
+    unsafe {
+        extern "system" { fn SetStdHandle(n: u32, h: *mut core::ffi::c_void) -> i32; }
+        SetStdHandle(-12i32 as u32, std::os::windows::io::AsRawHandle::as_raw_handle(&f)); // STD_ERROR_HANDLE
+    }
+    std::mem::forget(f); // the fd/handle must outlive this function
+}
+
+/// A crash mid-transcription can leave a staged chunk behind (see `transcribe_buffer`).
+fn remove_stale_audio() {
+    for e in std::fs::read_dir(std::env::temp_dir()).into_iter().flatten().flatten() {
+        let n = e.file_name();
+        let n = n.to_string_lossy();
+        if n.starts_with("syntari_ephemeral_") && n.ends_with(".wav") { let _ = std::fs::remove_file(e.path()); }
+    }
 }
 
 #[tauri::command]
@@ -197,6 +253,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(Sql::default().add_migrations("sqlite:syntari.db", migrations).build())
         .setup(|app| {
+            if let Ok(dir) = app.path().app_log_dir() { init_logging(&dir); }
+            remove_stale_audio();
             let resource_path = std::env::var("SYNTARI_MODELS_DIR").map(PathBuf::from).unwrap_or_else(|_| {
                 app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from(".")).join("models")
             });
@@ -241,6 +299,9 @@ pub fn run() {
             open_system_settings,
             expand_note,
             export_markdown,
+            backup_path,
+            reveal_path,
+            open_logs,
             extract_insights,
             summarize_transcript
         ])
