@@ -250,6 +250,7 @@ export const useStore = create<State>((set, get) => ({
   },
 
   applyExpansion(e) {
+    if (!get().notes.some((n) => n.id === e.id)) return; // note was deleted while the model ran
     set((s) => ({
       notes: s.notes.map((n) =>
         n.id === e.id

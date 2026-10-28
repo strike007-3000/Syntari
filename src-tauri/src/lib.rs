@@ -80,7 +80,9 @@ fn reveal_path(path: String) {
 
 #[tauri::command]
 fn open_logs(app: AppHandle) -> Result<(), String> {
-    open_path(&app.path().app_log_dir().map_err(|e| e.to_string())?);
+    let dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
+    let _ = std::fs::create_dir_all(&dir); // dev builds never create it, and open_path needs it to exist
+    open_path(&dir);
     Ok(())
 }
 
