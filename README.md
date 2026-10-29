@@ -148,7 +148,7 @@ syntari/
 │   │   │   └── loopback_windows.rs    # WASAPI loopback via cpal (Windows)
 │   │   ├── lib.rs                     # Tauri IPC commands, SQL plugin + migrations, log file, startup temp-file cleanup
 │   │   └── main.rs                    # Application entry point
-│   ├── migrations/                    # 001_init.sql (sessions, notes, transcript); 002_summary.sql (summary, auto flag); 003_title.sql (meeting title)
+│   ├── migrations/                    # 001_init.sql (sessions, notes, transcript); 002_summary.sql (summary, auto flag); 003_title.sql (meeting title); 004_citation_start.sql (citation timestamp)
 │   ├── Info.plist                     # macOS usage descriptions (microphone, screen/system audio)
 │   ├── capabilities/default.json      # Tauri permission set for the main window
 │   ├── tauri.conf.json                # Tauri v2 bundle, CSP, and window config
