@@ -232,6 +232,8 @@ export const useStore = create<State>((set, get) => ({
       kind: note.kind,
       text: note.raw,
       tsMs: ts,
+      // reviewing a stored meeting: Rust holds no transcript, so send it (ignored while recording)
+      context: running ? null : transcript.map((c) => ({ start: c.ts / 1000, end: c.ts / 1000, speaker: c.speaker, text: c.text })),
     })
       .then((res) => {
         if (res) get().applyExpansion({ ...res, id: note.id });

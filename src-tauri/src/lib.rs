@@ -176,6 +176,7 @@ async fn expand_note(
     _kind: String,
     text: String,
     ts_ms: u64,
+    context: Option<Vec<ai::engine::TranscriptChunk>>,
 ) -> Result<EnhancedResult, String> {
     let st = app.state::<AppState>();
 
@@ -186,7 +187,14 @@ async fn expand_note(
     }
 
     // 2. Temporal context slice [T - 45s, T + 10s]
-    let window_chunks = ai::get_window_chunks(&st.tr, ts_ms);
+    // A past meeting opened for review has no live transcript in Rust, so the UI sends the stored one.
+    let window_chunks = match context {
+        Some(all) if !is_running => {
+            let (t_min, t_max) = ai::calculate_window_bounds(ts_ms);
+            all.into_iter().filter(|c| c.end >= t_min && c.start <= t_max).collect()
+        }
+        _ => ai::get_window_chunks(&st.tr, ts_ms),
+    };
     let keystroke_secs = ai::ms_to_secs(ts_ms);
 
     // 3. Perform inference
