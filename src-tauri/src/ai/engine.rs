@@ -85,26 +85,60 @@ fn free_bytes(dir: &Path) -> Option<u64> {
     }
 }
 
+#[derive(Serialize, Deserialize, PartialEq)]
+struct HashEntry { sha: String, size: u64, mtime_ns: u128 }
+
 /// Trust-on-first-use integrity check: hashes are recorded after the download and re-checked
-/// on every launch, so corruption or tampering of the weights is caught.
+/// on launch, so corruption or tampering of the weights is caught. A file whose size and mtime
+/// match the manifest is not re-hashed (multi-GB hashing delayed every start).
 /// shortcut: no upstream-pinned hashes (the SDK doesn't publish any); pin them here when available.
+/// shortcut: same-size in-place edits that preserve mtime go undetected, hash always if that matters.
 async fn verify_integrity(model: &Model, name: &str) -> Result<(), String> {
     let dir = model.path().await.map_err(|e| format!("{name}: {e}"))?;
     tokio::task::spawn_blocking(move || {
         use sha2::{Digest, Sha256};
+        use std::collections::BTreeMap;
         let manifest = dir.join(".syntari-sha256");
-        let mut current = std::collections::BTreeMap::new();
+        // only a genuinely absent manifest starts a new baseline; an unreadable one fails closed
+        let raw = match std::fs::read_to_string(&manifest) {
+            Ok(r) => Some(r),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(format!("cannot read integrity manifest: {e}")),
+        };
+        let corrupt = || "integrity manifest is damaged; delete the model folder to re-download".to_string();
+        let saved: Option<BTreeMap<String, HashEntry>> = raw.as_deref().and_then(|r| serde_json::from_str(r).ok());
+        // pre-mtime manifests were a plain path -> sha map; still honoured, then upgraded below
+        let legacy: Option<BTreeMap<String, String>> = raw.as_deref().and_then(|r| serde_json::from_str(r).ok());
+        let mut current = BTreeMap::new();
         for e in walkdir::WalkDir::new(&dir).sort_by_file_name().into_iter().filter_map(Result::ok) {
             if !e.file_type().is_file() || e.path() == manifest { continue; }
-            let mut h = Sha256::new();
-            std::io::copy(&mut std::fs::File::open(e.path()).map_err(|e| e.to_string())?, &mut h).map_err(|e| e.to_string())?;
             let rel = e.path().strip_prefix(&dir).unwrap().to_string_lossy().into_owned();
-            current.insert(rel, format!("{:x}", h.finalize()));
+            let meta = e.metadata().map_err(|e| e.to_string())?;
+            let size = meta.len();
+            let mtime_ns = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+            let sha = match saved.as_ref().and_then(|m| m.get(&rel)) {
+                Some(p) if p.size == size && p.mtime_ns == mtime_ns => p.sha.clone(),
+                _ => {
+                    let mut h = Sha256::new();
+                    std::io::copy(&mut std::fs::File::open(e.path()).map_err(|e| e.to_string())?, &mut h).map_err(|e| e.to_string())?;
+                    format!("{:x}", h.finalize())
+                }
+            };
+            current.insert(rel, HashEntry { sha, size, mtime_ns });
         }
-        match std::fs::read_to_string(&manifest) {
-            Ok(saved) if serde_json::from_str::<std::collections::BTreeMap<String, String>>(&saved).ok().as_ref() == Some(&current) => Ok(()),
-            Ok(_) => Err("model files changed since download (corrupt or tampered); delete the model folder to re-download".to_string()),
-            Err(_) => std::fs::write(&manifest, serde_json::to_string(&current).unwrap()).map_err(|e| e.to_string()),
+        let write = |m: &BTreeMap<String, HashEntry>| std::fs::write(&manifest, serde_json::to_string(m).unwrap()).map_err(|e| e.to_string());
+        let shas: BTreeMap<&String, &String> = current.iter().map(|(k, v)| (k, &v.sha)).collect();
+        let expected: Option<BTreeMap<&String, &String>> = match (&saved, &legacy, &raw) {
+            (Some(m), _, _) => Some(m.iter().map(|(k, v)| (k, &v.sha)).collect()),
+            (None, Some(m), _) => Some(m.iter().collect()),
+            (None, None, Some(_)) => return Err(corrupt()),
+            _ => None,
+        };
+        match expected {
+            // rewrite when cached size/mtime went stale (same content) so the next launch skips hashing
+            Some(exp) if exp == shas => if saved.as_ref() != Some(&current) { write(&current) } else { Ok(()) },
+            Some(_) => Err("model files changed since download (corrupt or tampered); delete the model folder to re-download".to_string()),
+            None => write(&current),
         }
     })
     .await
@@ -332,21 +366,35 @@ impl FoundryEngine {
         let system_prompt = "You are Syntari, an on-device meeting note assistant.\n\
             First classify the note, then expand it into one precise sentence using ONLY the provided transcript.\n\
             Reply in exactly this format:\n\
-            CATEGORY: decision | action | risk | discussion\n\
+            CATEGORY: discussion | action | risk | decision\n\
             Category definitions:\n\
-            - decision: something already agreed or chosen (\"We agreed to ship Friday\", \"Going with Postgres\").\n\
+            - decision: something already agreed or chosen (\"We agreed to ship Friday\", \"Going with Postgres\"). Facts, figures, results and summaries are NOT decisions, even when important.\n\
             - action: a task someone must do, usually with a person or deadline (\"Dana will send the contract\").\n\
             - risk: a problem, delay, cost, or blocker that could hurt the plan.\n\
-            - discussion: a topic talked about, an idea, or a tentative suggestion (\"Maybe we should switch vendors\") with no commitment.\n\
+            - discussion: a topic talked about, a fact or figure that was stated, an idea, or a tentative suggestion (\"Maybe we should switch vendors\") with no commitment.\n\
             When unsure, choose discussion.\n\
             NOTE: <one sentence>\n\
             OWNER: <person responsible, or none>\n\
             DUE: <deadline as stated, or none>\n\
             OWNER and DUE only apply to actions; write none otherwise.\n\
-            STRICT RULES:\n\
-            1. Every word in your output must be directly supported by a quote from the transcript.\n\
-            2. Never add numbers, percentages, names, or dates not explicitly stated in the transcript.\n\
-            3. If you cannot fully ground the expansion, return the raw shorthand unchanged — no paraphrasing.\n\
+            EXAMPLE\n\
+            Transcript: \"Revenue grew 12% to 4 million dollars. Churn was flat.\"\n\
+            Note: \"revenue up\"\n\
+            CATEGORY: discussion\n\
+            NOTE: Revenue grew 12% to 4 million dollars.\n\
+            OWNER: none\n\
+            DUE: none\n\
+            EXAMPLE (note unrelated to the transcript: keep it as written)\n\
+            Transcript: \"Revenue grew 12% to 4 million dollars. Churn was flat.\"\n\
+            Note: \"go with vendor B\"\n\
+            CATEGORY: decision\n\
+            NOTE: Go with vendor B.\n\
+            OWNER: none\n\
+            DUE: none\n\
+            RULES:\n\
+            1. Expand the note into one complete sentence by adding the specific names, figures and facts the transcript states about its topic.\n\
+            2. Never add numbers, percentages, names, or dates that are not explicitly stated in the transcript.\n\
+            3. Only if the transcript says nothing relevant to the note, return the note unchanged.\n\
             4. One sentence maximum. No preamble, no 'Here is', no 'As discussed'.";
 
         let user_prompt = format!(
@@ -379,6 +427,7 @@ impl FoundryEngine {
         }
 
         // The model may or may not repeat "CATEGORY:", so take the first category word on any line before NOTE.
+        eprintln!("[Syntari Inference] model reply: {}", enhanced_text.trim());
         let mut category = "discussion".to_string();
         let mut note = String::new();
         let (mut owner, mut due) = (None, None);
@@ -386,15 +435,19 @@ impl FoundryEngine {
         for line in enhanced_text.lines() {
             let l = line.trim();
             let field = |v: &str| Some(v.trim().to_string()).filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("none"));
-            if let Some(n) = l.strip_prefix("NOTE:") {
+            // the model doesn't keep the label's case ("Note:" came back in practice)
+            let label = |k: &str| l.get(..k.len()).filter(|p| p.eq_ignore_ascii_case(k)).map(|_| &l[k.len()..]);
+            if let Some(n) = label("NOTE:") {
                 note = n.trim().to_string();
-            } else if let Some(v) = l.strip_prefix("OWNER:") {
+            } else if let Some(v) = label("OWNER:") {
                 owner = field(v);
-            } else if let Some(v) = l.strip_prefix("DUE:") {
+            } else if let Some(v) = label("DUE:") {
                 due = field(v);
             } else if !found {
                 let lower = l.to_lowercase();
-                if let Some(c) = ["decision", "action", "risk", "discussion"].iter().find(|c| lower.contains(*c)) {
+                // a line echoing the whole "decision | action | risk | discussion" template names several: not an answer
+                let hits: Vec<_> = ["decision", "action", "risk", "discussion"].into_iter().filter(|c| lower.contains(c)).collect();
+                if let [c] = hits[..] {
                     category = c.to_string();
                     found = true;
                 }
@@ -402,6 +455,10 @@ impl FoundryEngine {
         }
         if note.is_empty() {
             note = raw_shorthand.to_string();
+        }
+        // an unchanged note means the model found no grounding, so its category is a guess; the prompt says unsure = discussion
+        if note.eq_ignore_ascii_case(raw_shorthand) {
+            category = "discussion".to_string();
         }
         eprintln!("[Syntari Inference] raw=\"{raw_shorthand}\" -> {category}: \"{note}\"");
 

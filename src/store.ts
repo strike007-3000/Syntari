@@ -12,7 +12,7 @@ interface InsightItem {
   due?: string;
 }
 
-export interface MeetingRow { id: number; started_at: number; summary: string | null }
+export interface MeetingRow { id: number; started_at: number; summary: string | null; title: string | null; first_note: string | null }
 
 interface State {
   running: boolean;
@@ -53,6 +53,8 @@ interface State {
   dismissDbError: () => void;
   deleteSession: (id: number) => Promise<void>;
   deleteNote: (id: string) => void;
+  editNote: (id: string, text: string) => void;
+  renameSession: (id: number, title: string) => Promise<void>;
   backup: () => Promise<string>;
 }
 
@@ -64,6 +66,7 @@ let lastInsightMs = 0;
 const seenInsightTexts = new Set<string>();
 // Notes whose category the user typed (dec:/act:/risk:); the model must not re-bucket these.
 const typedKinds = new Set<string>();
+const editedNotes = new Set<string>(); // manual text edits must survive a late model expansion
 const getDb = () => {
   if (!db) {
     db = Database.load("sqlite:syntari.db");
@@ -126,7 +129,9 @@ export const useStore = create<State>((set, get) => ({
       }
     }
     try {
-      await invoke("start_syntari_session", { offsetMs: offset });
+      // chunks carry only their start time; reuse it as both bounds for the lookback window
+      const prior = resume ? get().transcript.map((c) => ({ start: c.ts / 1000, end: c.ts / 1000, speaker: c.speaker, text: c.text })) : [];
+      await invoke("start_syntari_session", { offsetMs: offset, prior });
     } catch (e) {
       if (db && !resume && sessionId !== null) await db.execute("DELETE FROM sessions WHERE id=?", [sessionId]).catch(() => {});
       throw e;
@@ -190,8 +195,8 @@ export const useStore = create<State>((set, get) => ({
     let ts = explicitTs;
     if (ts === undefined) {
       if (transcript.length > 0) {
-        const lastChunk = transcript[transcript.length - 1];
-        ts = lastChunk.end !== undefined ? lastChunk.end * 1000 : lastChunk.ts;
+        // chunk ids are random, so never trust array order for "latest"
+        ts = Math.max(...transcript.map((c) => (c.end !== undefined ? c.end * 1000 : c.ts)));
       } else if (running && startedAt > 0) {
         ts = Math.max(0, Date.now() - startedAt);
       } else if (sessionElapsedSeconds > 0) {
@@ -227,6 +232,8 @@ export const useStore = create<State>((set, get) => ({
       kind: note.kind,
       text: note.raw,
       tsMs: ts,
+      // reviewing a stored meeting: Rust holds no transcript, so send it (ignored while recording)
+      context: running ? null : transcript.map((c) => ({ start: c.ts / 1000, end: c.ts / 1000, speaker: c.speaker, text: c.text })),
     })
       .then((res) => {
         if (res) get().applyExpansion({ ...res, id: note.id });
@@ -260,7 +267,7 @@ export const useStore = create<State>((set, get) => ({
               owner: n.owner ?? e.owner ?? undefined,
               due: n.due ?? e.due ?? undefined,
               status: "completed",
-              expanded: e.enhanced_text || n.raw,
+              expanded: editedNotes.has(n.id) ? n.expanded : e.enhanced_text || n.raw,
               citation: e.citation_quote
                 ? {
                     chunkIds: [],
@@ -276,8 +283,8 @@ export const useStore = create<State>((set, get) => ({
 
     persist((d) =>
       d.execute(
-        "UPDATE notes SET expanded=?, citation_quote=?, citation_chunks=?, kind=COALESCE(?, kind), owner=COALESCE(owner, ?), due=COALESCE(due, ?) WHERE id=?",
-        [e.enhanced_text, e.citation_quote ?? null, "[]", typedKinds.has(e.id) ? null : e.category ?? null, e.owner ?? null, e.due ?? null, e.id],
+        "UPDATE notes SET expanded=COALESCE(?, expanded), citation_quote=?, citation_chunks=?, kind=COALESCE(?, kind), owner=COALESCE(owner, ?), due=COALESCE(due, ?) WHERE id=?",
+        [editedNotes.has(e.id) ? null : e.enhanced_text, e.citation_quote ?? null, "[]", typedKinds.has(e.id) ? null : e.category ?? null, e.owner ?? null, e.due ?? null, e.id],
       ),
     );
   },
@@ -285,7 +292,7 @@ export const useStore = create<State>((set, get) => ({
   failExpansion(id) {
     set((s) => ({
       notes: s.notes.map((n) =>
-        n.id === id ? { ...n, status: "failed", expanded: n.raw } : n,
+        n.id === id ? { ...n, status: "failed", expanded: editedNotes.has(id) ? n.expanded : n.raw } : n,
       ),
     }));
   },
@@ -339,7 +346,9 @@ export const useStore = create<State>((set, get) => ({
   async listSessions(q = "") {
     const like = `%${q.trim()}%`;
     return (await getDb()).select(
-      `SELECT id, started_at, summary FROM sessions s WHERE ?1 = '%%' OR summary LIKE ?1
+      `SELECT id, started_at, summary, title,
+         (SELECT COALESCE(expanded, raw) FROM notes n WHERE n.session_id = s.id ORDER BY ts_ms LIMIT 1) AS first_note
+       FROM sessions s WHERE ?1 = '%%' OR summary LIKE ?1 OR title LIKE ?1
          OR EXISTS (SELECT 1 FROM notes n WHERE n.session_id = s.id AND (n.raw LIKE ?1 OR n.expanded LIKE ?1))
          OR EXISTS (SELECT 1 FROM transcript t WHERE t.session_id = s.id AND t.text LIKE ?1)
        ORDER BY started_at DESC LIMIT 200`,
@@ -351,7 +360,7 @@ export const useStore = create<State>((set, get) => ({
     if (get().running) return;
     const d = await getDb();
     const rows = await d.select<any[]>("SELECT * FROM notes WHERE session_id=? ORDER BY ts_ms", [id]);
-    const chunks = await d.select<any[]>("SELECT * FROM transcript WHERE session_id=? ORDER BY chunk_id", [id]);
+    const chunks = await d.select<any[]>("SELECT * FROM transcript WHERE session_id=? ORDER BY ts_ms, rowid", [id]);
     const sum = await d.select<{ summary: string | null }[]>("SELECT summary FROM sessions WHERE id=?", [id]);
     const durationMs = Math.max(0, ...chunks.map((r) => r.ts_ms), ...rows.map((r) => r.ts_ms));
     set({
@@ -377,6 +386,17 @@ export const useStore = create<State>((set, get) => ({
     const d = await getDb();
     await d.execute("DELETE FROM sessions WHERE id=?", [id]); // notes and transcript go with it via ON DELETE CASCADE, atomically
     if (get().sessionId === id) set({ sessionId: null, loaded: false, durationMs: 0, sessionElapsedSeconds: 0, notes: [], transcript: [], summary: "" });
+  },
+
+  editNote(id, text) {
+    typedKinds.add(id);
+    editedNotes.add(id);
+    set((s) => ({ notes: s.notes.map((n) => (n.id === id ? { ...n, expanded: text } : n)) }));
+    persist((d) => d.execute("UPDATE notes SET expanded=? WHERE id=?", [text, id]));
+  },
+
+  async renameSession(id, title) {
+    await (await getDb()).execute("UPDATE sessions SET title=? WHERE id=?", [title.trim() || null, id]);
   },
 
   deleteNote(id) {

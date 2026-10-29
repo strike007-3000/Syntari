@@ -27,7 +27,7 @@ fn models_ready(st: State<'_, AppState>) -> bool {
 }
 
 #[tauri::command]
-fn start_syntari_session(app: AppHandle, st: State<'_, AppState>, offset_ms: u64) -> Result<(), String> {
+fn start_syntari_session(app: AppHandle, st: State<'_, AppState>, offset_ms: u64, prior: Vec<ai::engine::TranscriptChunk>) -> Result<(), String> {
     if !models_loaded(&st) {
         return Err("AI models are still loading".into());
     }
@@ -35,7 +35,8 @@ fn start_syntari_session(app: AppHandle, st: State<'_, AppState>, offset_ms: u64
     if s.is_some() {
         return Err("session already running".into());
     }
-    st.tr.lock().unwrap().clear();
+    // On Continue, seed the previous transcript so notes typed right away still get lookback context
+    *st.tr.lock().unwrap() = prior;
     let t0 = Instant::now();
     let sess = audio::start(app, st.cap.clone(), st.tr.clone(), st.ai_engine.clone(), offset_ms as f64 / 1000.0)?;
     *s = Some((sess, t0));
@@ -175,6 +176,7 @@ async fn expand_note(
     _kind: String,
     text: String,
     ts_ms: u64,
+    context: Option<Vec<ai::engine::TranscriptChunk>>,
 ) -> Result<EnhancedResult, String> {
     let st = app.state::<AppState>();
 
@@ -185,7 +187,14 @@ async fn expand_note(
     }
 
     // 2. Temporal context slice [T - 45s, T + 10s]
-    let window_chunks = ai::get_window_chunks(&st.tr, ts_ms);
+    // A past meeting opened for review has no live transcript in Rust, so the UI sends the stored one.
+    let window_chunks = match context {
+        Some(all) if !is_running => {
+            let (t_min, t_max) = ai::calculate_window_bounds(ts_ms);
+            all.into_iter().filter(|c| c.end >= t_min && c.start <= t_max).collect()
+        }
+        _ => ai::get_window_chunks(&st.tr, ts_ms),
+    };
     let keystroke_secs = ai::ms_to_secs(ts_ms);
 
     // 3. Perform inference
@@ -248,6 +257,11 @@ pub fn run() {
         version: 2,
         description: "summary",
         sql: include_str!("../migrations/002_summary.sql"),
+        kind: MigrationKind::Up,
+    }, Migration {
+        version: 3,
+        description: "title",
+        sql: include_str!("../migrations/003_title.sql"),
         kind: MigrationKind::Up,
     }];
 

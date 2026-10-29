@@ -55,13 +55,13 @@ export default function Header() {
 
   return (
     <header className="flex items-center justify-between gap-4 whitespace-nowrap border-b border-ink-700 bg-ink-900 px-4 py-2">
-      <div className="flex min-w-0 items-center gap-3">
+      <div className="flex min-w-0 items-center gap-3 overflow-hidden">
         <h1 className="text-lg font-semibold tracking-wide">Syntari</h1>
         {version && <span className="font-mono text-xs text-slate-500" title="Compare with the latest GitHub Release">v{version}</span>}
         <span title="No audio or text leaves your device" className="flex items-center gap-1 rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-xs text-emerald-400">
           <Shield size={12} /> On-device only
         </span>
-        <span className="flex items-center gap-1.5 rounded-full border border-ink-700 bg-ink-800 px-2.5 py-0.5 text-xs text-slate-400" title="whisper-small transcribes speech; phi-4-mini writes the notes. Both run on-device.">
+        <span className="hidden items-center gap-1.5 rounded-full border border-ink-700 bg-ink-800 px-2.5 py-0.5 text-xs text-slate-400 2xl:flex" title="whisper-small transcribes speech; phi-4-mini writes the notes. Both run on-device.">
           Powered by
           <span className="font-medium text-slate-100">whisper-small</span>
           <span className="text-slate-600">·</span>
