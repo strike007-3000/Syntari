@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useStore, MeetingRow } from "../store";
 
 const dayLabel = (ms: number) => {
@@ -11,6 +11,9 @@ const dayLabel = (ms: number) => {
 export default function Meetings() {
   const { listSessions, loadSession, newMeeting, running, deleteSession, renameSession } = useStore();
   const [renaming, setRenaming] = useState<number | null>(null);
+  // An in-flight rename must settle before any button navigates away; a failed save blocks the action so the typed title isn't lost.
+  const saving = useRef<Promise<boolean>>(Promise.resolve(true));
+  const afterSave = (act: () => unknown) => void saving.current.then((ok) => ok && act());
   const [q, setQ] = useState("");
   const [rows, setRows] = useState<MeetingRow[]>([]);
   const refresh = () => listSessions(q).then(setRows).catch(() => setRows([]));
@@ -27,7 +30,7 @@ export default function Meetings() {
     <div className="flex h-full flex-col overflow-y-auto p-8">
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Meetings</h1>
-        <button onClick={newMeeting} disabled={running} className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-ink-950 disabled:opacity-50">New meeting</button>
+        <button onClick={() => afterSave(newMeeting)} disabled={running} className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-ink-950 disabled:opacity-50">New meeting</button>
       </div>
       <input
         value={q}
@@ -48,23 +51,28 @@ export default function Meetings() {
                     autoFocus
                     defaultValue={r.title ?? ""}
                     placeholder="Meeting title"
-                    onBlur={(e) => renameSession(r.id, e.target.value).then(() => { setRenaming(null); refresh(); }).catch((err) => { alert(`Rename failed: ${err}`); e.target.focus(); })}
+                    onBlur={(e) => {
+                      const el = e.target;
+                      saving.current = renameSession(r.id, el.value)
+                        .then(() => { setRenaming(null); refresh(); return true; })
+                        .catch((err) => { alert(`Rename failed: ${err}`); el.focus(); return false; });
+                    }}
                     onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setRenaming(null); }}
                     className="min-w-0 flex-1 rounded border border-ink-700 bg-ink-950 px-2 py-0.5 text-sm"
                   />
                 ) : (
-                  <button onClick={() => open(r.id)} className="min-w-0 flex-1 text-left">
+                  <button onClick={() => afterSave(() => open(r.id))} className="min-w-0 flex-1 text-left">
                     <span className="line-clamp-2 text-sm">{r.title || r.summary?.replace(/[#*\-]/g, "").trim() || r.first_note || "No summary yet"}</span>
                   </button>
                 )}
                 <button onClick={() => setRenaming(r.id)} className="rounded-md border border-ink-700 px-3 py-1 text-xs hover:text-white">Rename</button>
-                <button onClick={() => open(r.id)} className="rounded-md border border-ink-700 px-3 py-1 text-xs hover:text-white">Open</button>
+                <button onClick={() => afterSave(() => open(r.id))} className="rounded-md border border-ink-700 px-3 py-1 text-xs hover:text-white">Open</button>
                 <button
-                  onClick={() => open(r.id).then(() => useStore.getState().start()).catch((e) => alert(String(e)))}
+                  onClick={() => afterSave(() => open(r.id).then(() => useStore.getState().start()).catch((e) => alert(String(e))))}
                   disabled={running}
                   className="rounded-md bg-accent/20 px-3 py-1 text-xs font-semibold text-accent hover:bg-accent/30 disabled:opacity-50"
                 >Continue</button>
-                <button onClick={() => remove(r.id)} disabled={running} className="rounded-md px-2 py-1 text-xs text-rose-400 hover:bg-rose-500/10 disabled:opacity-50" aria-label="Delete meeting">Delete</button>
+                <button onClick={() => afterSave(() => remove(r.id))} disabled={running} className="rounded-md px-2 py-1 text-xs text-rose-400 hover:bg-rose-500/10 disabled:opacity-50" aria-label="Delete meeting">Delete</button>
               </li>
             ))}
           </ul>
