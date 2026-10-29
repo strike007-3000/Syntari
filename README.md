@@ -285,3 +285,9 @@ CI (`.github/workflows/windows.yml`) runs `tsc`, `vitest`, the frontend build, `
 5. Optional: capture network connections during use (Resource Monitor or Wireshark) to confirm the only traffic is the model download.
 
 **Tester steps (from CI artifact):** download `syntari-windows` from the workflow run and install the `.exe`. Unsigned, so SmartScreen will warn (*More info > Run anyway*).
+
+---
+
+## License
+
+Syntari is released under the [MIT License](LICENSE). Bundled third-party components keep their own licenses (see `src-tauri/licenses`). See also [SECURITY.md](SECURITY.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
