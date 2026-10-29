@@ -368,10 +368,10 @@ impl FoundryEngine {
             Reply in exactly this format:\n\
             CATEGORY: decision | action | risk | discussion\n\
             Category definitions:\n\
-            - decision: something already agreed or chosen (\"We agreed to ship Friday\", \"Going with Postgres\").\n\
+            - decision: something already agreed or chosen (\"We agreed to ship Friday\", \"Going with Postgres\"). Facts, figures, results and summaries are NOT decisions, even when important.\n\
             - action: a task someone must do, usually with a person or deadline (\"Dana will send the contract\").\n\
             - risk: a problem, delay, cost, or blocker that could hurt the plan.\n\
-            - discussion: a topic talked about, an idea, or a tentative suggestion (\"Maybe we should switch vendors\") with no commitment.\n\
+            - discussion: a topic talked about, a fact or figure that was stated, an idea, or a tentative suggestion (\"Maybe we should switch vendors\") with no commitment.\n\
             When unsure, choose discussion.\n\
             NOTE: <one sentence>\n\
             OWNER: <person responsible, or none>\n\
