@@ -195,8 +195,8 @@ export const useStore = create<State>((set, get) => ({
     let ts = explicitTs;
     if (ts === undefined) {
       if (transcript.length > 0) {
-        const lastChunk = transcript[transcript.length - 1];
-        ts = lastChunk.end !== undefined ? lastChunk.end * 1000 : lastChunk.ts;
+        // chunk ids are random, so never trust array order for "latest"
+        ts = Math.max(...transcript.map((c) => (c.end !== undefined ? c.end * 1000 : c.ts)));
       } else if (running && startedAt > 0) {
         ts = Math.max(0, Date.now() - startedAt);
       } else if (sessionElapsedSeconds > 0) {
@@ -360,7 +360,7 @@ export const useStore = create<State>((set, get) => ({
     if (get().running) return;
     const d = await getDb();
     const rows = await d.select<any[]>("SELECT * FROM notes WHERE session_id=? ORDER BY ts_ms", [id]);
-    const chunks = await d.select<any[]>("SELECT * FROM transcript WHERE session_id=? ORDER BY chunk_id", [id]);
+    const chunks = await d.select<any[]>("SELECT * FROM transcript WHERE session_id=? ORDER BY ts_ms, rowid", [id]);
     const sum = await d.select<{ summary: string | null }[]>("SELECT summary FROM sessions WHERE id=?", [id]);
     const durationMs = Math.max(0, ...chunks.map((r) => r.ts_ms), ...rows.map((r) => r.ts_ms));
     set({
