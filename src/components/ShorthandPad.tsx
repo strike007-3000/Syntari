@@ -63,7 +63,7 @@ export default function ShorthandPad() {
                   }`}
                 >
                   {isCompleted
-                    ? "Enhanced"
+                    ? n.expanded && n.expanded !== n.raw ? "Enhanced" : "Filed"
                     : isFailed
                     ? "Failed"
                     : "Pending"}

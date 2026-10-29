@@ -377,6 +377,13 @@ impl FoundryEngine {
             OWNER: <person responsible, or none>\n\
             DUE: <deadline as stated, or none>\n\
             OWNER and DUE only apply to actions; write none otherwise.\n\
+            EXAMPLE\n\
+            Transcript: \"Revenue grew 12% to 4 million dollars. Churn was flat.\"\n\
+            Note: \"revenue up\"\n\
+            CATEGORY: discussion\n\
+            NOTE: Revenue grew 12% to 4 million dollars.\n\
+            OWNER: none\n\
+            DUE: none\n\
             RULES:\n\
             1. Expand the note into one complete sentence by adding the specific names, figures and facts the transcript states about its topic.\n\
             2. Never add numbers, percentages, names, or dates that are not explicitly stated in the transcript.\n\
@@ -413,6 +420,7 @@ impl FoundryEngine {
         }
 
         // The model may or may not repeat "CATEGORY:", so take the first category word on any line before NOTE.
+        eprintln!("[Syntari Inference] model reply: {}", enhanced_text.trim());
         let mut category = "discussion".to_string();
         let mut note = String::new();
         let (mut owner, mut due) = (None, None);
