@@ -377,10 +377,10 @@ impl FoundryEngine {
             OWNER: <person responsible, or none>\n\
             DUE: <deadline as stated, or none>\n\
             OWNER and DUE only apply to actions; write none otherwise.\n\
-            STRICT RULES:\n\
-            1. Every word in your output must be directly supported by a quote from the transcript.\n\
-            2. Never add numbers, percentages, names, or dates not explicitly stated in the transcript.\n\
-            3. If you cannot fully ground the expansion, return the raw shorthand unchanged — no paraphrasing.\n\
+            RULES:\n\
+            1. Expand the note into one complete sentence by adding the specific names, figures and facts the transcript states about its topic.\n\
+            2. Never add numbers, percentages, names, or dates that are not explicitly stated in the transcript.\n\
+            3. Only if the transcript says nothing relevant to the note, return the note unchanged.\n\
             4. One sentence maximum. No preamble, no 'Here is', no 'As discussed'.";
 
         let user_prompt = format!(
