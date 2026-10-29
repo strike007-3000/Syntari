@@ -14,6 +14,7 @@ const SECTIONS: { kind: NoteKind; title: string; dot: string }[] = [
 function Item({ n }: { n: Note }) {
   const { toggleDone, inspect, acceptSuggestion, dismissSuggestion, setKind, deleteNote, editNote, transcript } = useStore();
   const [editing, setEditing] = useState(false);
+  const [flipUp, setFlipUp] = useState(false); // quote tooltip opens upward near the bottom edge so it isn't clipped by the scroll area
   const body = n.expanded ?? n.raw;
 
   if (n.status === "suggested") {
@@ -28,7 +29,10 @@ function Item({ n }: { n: Note }) {
   }
 
   return (
-    <li className="group relative flex gap-2 rounded p-2 hover:bg-ink-800">
+    <li
+      className="group relative flex gap-2 rounded p-2 hover:bg-ink-800"
+      onMouseEnter={(e) => setFlipUp(e.currentTarget.getBoundingClientRect().bottom + 280 > window.innerHeight)}
+    >
       {n.kind === "action" && (
         <input type="checkbox" checked={!!n.done} onChange={() => toggleDone(n.id)} className="mt-1" />
       )}
@@ -76,7 +80,7 @@ function Item({ n }: { n: Note }) {
         className="self-start rounded px-1 text-xs text-rose-400 opacity-0 focus:opacity-100 group-hover:opacity-100"
       >✕</button>
       {n.citation?.quote && (
-        <div className="pointer-events-none absolute left-6 top-full z-10 hidden w-96 rounded border border-ink-700 bg-ink-950 p-2 text-xs italic shadow-lg group-hover:block">
+        <div className={`pointer-events-none absolute left-6 ${flipUp ? "bottom-full" : "top-full"} z-10 hidden w-96 rounded border border-ink-700 bg-ink-950 p-2 text-xs italic shadow-lg group-hover:block`}>
           "{n.citation.quote}"
         </div>
       )}
