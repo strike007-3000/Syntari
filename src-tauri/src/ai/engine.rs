@@ -366,7 +366,7 @@ impl FoundryEngine {
         let system_prompt = "You are Syntari, an on-device meeting note assistant.\n\
             First classify the note, then expand it into one precise sentence using ONLY the provided transcript.\n\
             Reply in exactly this format:\n\
-            CATEGORY: decision | action | risk | discussion\n\
+            CATEGORY: discussion | action | risk | decision\n\
             Category definitions:\n\
             - decision: something already agreed or chosen (\"We agreed to ship Friday\", \"Going with Postgres\"). Facts, figures, results and summaries are NOT decisions, even when important.\n\
             - action: a task someone must do, usually with a person or deadline (\"Dana will send the contract\").\n\
