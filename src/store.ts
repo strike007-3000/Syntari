@@ -283,8 +283,8 @@ export const useStore = create<State>((set, get) => ({
 
     persist((d) =>
       d.execute(
-        "UPDATE notes SET expanded=COALESCE(?, expanded), citation_quote=?, citation_chunks=?, kind=COALESCE(?, kind), owner=COALESCE(owner, ?), due=COALESCE(due, ?) WHERE id=?",
-        [editedNotes.has(e.id) ? null : e.enhanced_text, e.citation_quote ?? null, "[]", typedKinds.has(e.id) ? null : e.category ?? null, e.owner ?? null, e.due ?? null, e.id],
+        "UPDATE notes SET expanded=COALESCE(?, expanded), citation_quote=?, citation_start=?, citation_chunks=?, kind=COALESCE(?, kind), owner=COALESCE(owner, ?), due=COALESCE(due, ?) WHERE id=?",
+        [editedNotes.has(e.id) ? null : e.enhanced_text, e.citation_quote ?? null, e.citation_start ?? null, "[]", typedKinds.has(e.id) ? null : e.category ?? null, e.owner ?? null, e.due ?? null, e.id],
       ),
     );
   },
@@ -373,7 +373,7 @@ export const useStore = create<State>((set, get) => ({
       notes: rows.map((r) => ({
         id: r.id, kind: r.kind, raw: r.raw, ts: r.ts_ms, status: "completed", expanded: r.expanded ?? undefined,
         owner: r.owner ?? undefined, due: r.due ?? undefined, done: !!r.done, auto: !!r.auto,
-        citation: r.citation_quote ? { chunkIds: [], quote: r.citation_quote } : undefined,
+        citation: r.citation_quote ? { chunkIds: [], quote: r.citation_quote, start: r.citation_start ?? undefined } : undefined,
       })),
       transcript: chunks.map((r) => ({ id: r.chunk_id, speaker: r.speaker, text: r.text, ts: r.ts_ms })),
     });
