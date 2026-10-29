@@ -428,11 +428,13 @@ impl FoundryEngine {
         for line in enhanced_text.lines() {
             let l = line.trim();
             let field = |v: &str| Some(v.trim().to_string()).filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("none"));
-            if let Some(n) = l.strip_prefix("NOTE:") {
+            // the model doesn't keep the label's case ("Note:" came back in practice)
+            let label = |k: &str| l.get(..k.len()).filter(|p| p.eq_ignore_ascii_case(k)).map(|_| &l[k.len()..]);
+            if let Some(n) = label("NOTE:") {
                 note = n.trim().to_string();
-            } else if let Some(v) = l.strip_prefix("OWNER:") {
+            } else if let Some(v) = label("OWNER:") {
                 owner = field(v);
-            } else if let Some(v) = l.strip_prefix("DUE:") {
+            } else if let Some(v) = label("DUE:") {
                 due = field(v);
             } else if !found {
                 let lower = l.to_lowercase();
