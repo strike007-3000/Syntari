@@ -428,7 +428,9 @@ impl FoundryEngine {
                 due = field(v);
             } else if !found {
                 let lower = l.to_lowercase();
-                if let Some(c) = ["decision", "action", "risk", "discussion"].iter().find(|c| lower.contains(*c)) {
+                // a line echoing the whole "decision | action | risk | discussion" template names several: not an answer
+                let hits: Vec<_> = ["decision", "action", "risk", "discussion"].into_iter().filter(|c| lower.contains(c)).collect();
+                if let [c] = hits[..] {
                     category = c.to_string();
                     found = true;
                 }
@@ -436,6 +438,10 @@ impl FoundryEngine {
         }
         if note.is_empty() {
             note = raw_shorthand.to_string();
+        }
+        // an unchanged note means the model found no grounding, so its category is a guess; the prompt says unsure = discussion
+        if note.eq_ignore_ascii_case(raw_shorthand) {
+            category = "discussion".to_string();
         }
         eprintln!("[Syntari Inference] raw=\"{raw_shorthand}\" -> {category}: \"{note}\"");
 
