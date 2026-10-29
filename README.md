@@ -201,7 +201,7 @@ npm run tauri dev
 
 ## 8. Known Limitations & Troubleshooting
 
-* **First launch is slow:** ~4 GB of models download once (progress in the header). The app first checks for free disk (~1 GB for whisper-small, ~4.2 GB for phi-4-mini) and stops with a clear message if there is less. Every launch then hashes the weights, during which the header shows "Verifying local models…" and Start stays disabled. Transcription is unavailable until it finishes.
+* **First launch is slow:** ~4 GB of models download once (progress in the header). The app first checks for free disk (~1 GB for whisper-small, ~4.2 GB for phi-4-mini) and stops with a clear message if there is less. The first launch hashes all weights; later launches re-hash only files whose size or modification time changed, so a normal start is near-instant. While it runs the header shows "Verifying local models…" and Start stays disabled. Transcription is unavailable until it finishes.
 * **Transcript accuracy:** speech is cut on silence gaps (3 s minimum, 12 s maximum) and transcribed by whisper-small. Larger models (`whisper-medium`, `whisper-large-v3-turbo`) are in the Foundry catalog but not wired up. Non-speech tags like `(soft music)` are discarded.
 * **You-track during remote audio:** the mic track is kept while system audio plays only if its energy after echo cancellation exceeds 0.005 RMS (`audio/mod.rs`). The threshold (`BLEED_RMS`) is untuned; each window logs `[Bleed] mic residual RMS` to help tune it. Speaker bleed may be transcribed as "You" or quiet speech dropped. Use headphones for best results.
 * **Exit behaviour:** Foundry's native runtime aborts in a C++ destructor on normal process exit (macOS "quit unexpectedly" dialog). Syntari stops the session and then exits with `_exit(0)` (macOS/Linux) or `TerminateProcess` (Windows) to skip it.
@@ -221,7 +221,7 @@ npm run tauri dev
 * **Logs & backup:** release builds write `syntari.log` (open it with the *Logs* button; it can contain note text, so skim before sharing). *Back up DB* saves a copy of the meetings database to Downloads. The header shows the app version; compare it with the latest GitHub Release to see if you are current (no auto-updater).
 * **Microphone denied:** if Start fails because the mic is unavailable, a prompt offers to open the OS microphone privacy page. System-audio denial on macOS shows the amber header banner.
 * **Non-f32 microphones:** devices whose default format is 16-bit/32-bit integer are converted to f32 in the capture callback; other formats are rejected with a message.
-* **Not implemented:** signed/notarized release builds, an auto-updater (check the version in the header against GitHub Releases), upstream-pinned model hashes, editing notes/titles, repopulating the AI context when continuing a meeting.
+* **Not implemented:** signed/notarized release builds, an auto-updater (check the version in the header against GitHub Releases), upstream-pinned model hashes, choosing the moment a note refers to when typing into a reopened meeting.
 
 
 ---
