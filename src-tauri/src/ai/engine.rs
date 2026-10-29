@@ -384,6 +384,13 @@ impl FoundryEngine {
             NOTE: Revenue grew 12% to 4 million dollars.\n\
             OWNER: none\n\
             DUE: none\n\
+            EXAMPLE (note unrelated to the transcript: keep it as written)\n\
+            Transcript: \"Revenue grew 12% to 4 million dollars. Churn was flat.\"\n\
+            Note: \"go with vendor B\"\n\
+            CATEGORY: decision\n\
+            NOTE: Go with vendor B.\n\
+            OWNER: none\n\
+            DUE: none\n\
             RULES:\n\
             1. Expand the note into one complete sentence by adding the specific names, figures and facts the transcript states about its topic.\n\
             2. Never add numbers, percentages, names, or dates that are not explicitly stated in the transcript.\n\
