@@ -225,7 +225,7 @@ npm run tauri dev
 * **Windows is new and untested on hardware:** it compiles in CI but needs a real run. Differences from macOS: system audio uses WASAPI loopback on the default output device (no permission prompt; capture follows the device's mix format, usually 48 kHz stereo); only the microphone privacy toggle matters (*Settings > Privacy > Microphone*); on exit the process is ended with `TerminateProcess` (the Windows counterpart of `_exit`) to skip Foundry's teardown, so confirm there is no crash dialog on quit.
 * **Data is unencrypted at rest:** the database is plain SQLite in the app-data directory (`syntari.db`). Encrypting it would need our own SQLCipher connection, because the SQL plugin cannot pass a key. Use FileVault/BitLocker.
 * **Summary quality and speed:** the summary comes from phi-4-mini on-device, so it can miss points or be slow on long meetings. An untitled meeting is labelled with its summary, else its first note. Regenerate after continuing a meeting, since the old summary is not updated automatically.
-* **Continue and AI context:** continuing seeds the note-expansion window with the saved transcript, and notes typed while reviewing an opened meeting are grounded in its last 45 s (they are stamped at the end of the transcript, not at an earlier moment you may have meant).
+* **Continue and AI context:** continuing seeds the note-expansion window with the saved transcript, and notes typed while reviewing an opened meeting are grounded in its last 45 s (stamped at the end of the transcript by default; pick an earlier moment with the *Refers to* menu above the input).
 * **Expansion quality:** phi-4-mini sometimes returns a vague sentence, picks a wrong category, or inherits a transcription error (e.g. Whisper hearing "FY26" as "F526"). Use `dec:`, `act:` or `risk:` to force the category, double-click to correct text. Each inference prints the raw model reply to the log.
 * **Old accepted suggestions:** notes accepted from AI suggestions before migration 002 have no AI flag, so they show in the left pad when reloaded.
 * **Deleting is permanent:** *Delete* on a meeting removes its notes and transcript; the ✕ on a note removes just that note. Both ask for confirmation, and neither can be undone (use *Back up DB* first if unsure). Delete is disabled while recording.
@@ -235,7 +235,7 @@ npm run tauri dev
 * **Logs & backup:** release builds write `syntari.log` (the *Logs* button opens the log folder; the file can contain note and transcript-derived text, so skim before sharing, and it is reset at launch once over 5 MB; dev builds log to the terminal). *Back up DB* saves a copy of the meetings database to Downloads. The header shows the app version; compare it with the latest GitHub Release to see if you are current (no auto-updater).
 * **Microphone denied:** if Start fails because the mic is unavailable, a prompt offers to open the OS microphone privacy page. System-audio denial on macOS shows the amber header banner.
 * **Non-f32 microphones:** devices whose default format is 16-bit/32-bit integer are converted to f32 in the capture callback; other formats are rejected with a message.
-* **Not implemented:** signed/notarized release builds, an auto-updater (check the version in the header against GitHub Releases), upstream-pinned model hashes, choosing the moment a note refers to when typing into a reopened meeting.
+* **Not implemented:** signed/notarized release builds, an auto-updater (check the version in the header against GitHub Releases), upstream-pinned model hashes.
 
 
 ---
