@@ -8,7 +8,7 @@ Follow **Development & Setup** in the [README](README.md#7-development--setup) f
 
 ```bash
 npm install
-export FOUNDRY_LOCAL_RUNTIME_VERSION=2.1.0   # PowerShell: $env:FOUNDRY_LOCAL_RUNTIME_VERSION="2.1.0"
+export FOUNDRY_LOCAL_RUNTIME_VERSION=2.3.1   # PowerShell: $env:FOUNDRY_LOCAL_RUNTIME_VERSION="2.3.1"
 npm run tauri dev
 ```
 
