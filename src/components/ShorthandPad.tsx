@@ -1,10 +1,12 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useStore } from "../store";
 import { fmtClock } from "../types";
 
 export default function ShorthandPad() {
   const [text, setText] = useState("");
-  const { notes: allNotes, addLine, transcript, sessionElapsedSeconds } = useStore();
+  const [momentTs, setMomentTs] = useState(""); // "" = end of transcript; else the chunk start (ms) a reopened-meeting note refers to
+  const { notes: allNotes, addLine, transcript, sessionElapsedSeconds, running } = useStore();
+  const sorted = useMemo(() => [...transcript].sort((a, b) => a.ts - b.ts), [transcript]);
   const notes = allNotes.filter((n) => !n.auto); // only what the user typed; AI suggestions live in the dashboard
   const listEndRef = useRef<HTMLDivElement>(null);
 
@@ -18,7 +20,9 @@ export default function ShorthandPad() {
 
     // Pull accurate audio timestamp
     let ts = 0;
-    if (transcript.length > 0) {
+    if (!running && momentTs !== "") {
+      ts = Number(momentTs);
+    } else if (transcript.length > 0) {
       const last = transcript[transcript.length - 1];
       ts = last.end !== undefined ? last.end * 1000 : last.ts;
     } else if (sessionElapsedSeconds > 0) {
@@ -27,6 +31,7 @@ export default function ShorthandPad() {
 
     addLine(trimmed, ts);
     setText("");
+    setMomentTs("");
   };
 
   return (
@@ -91,6 +96,19 @@ export default function ShorthandPad() {
           }}
           className="w-full resize-none bg-transparent p-2 font-mono text-xs text-gray-200 placeholder-slate-500 focus:outline-none"
         />
+        {!running && sorted.length > 0 && (
+          <select
+            aria-label="Moment this note refers to"
+            value={momentTs}
+            onChange={(e) => setMomentTs(e.target.value)}
+            className="mx-2 mb-1 w-[calc(100%-1rem)] truncate rounded bg-ink-950 p-1 text-[10px] text-slate-400"
+          >
+            <option value="">Refers to: end of transcript</option>
+            {sorted.map((c) => (
+              <option key={c.id} value={c.ts}>{fmtClock(c.ts)} [{c.speaker}] {c.text.slice(0, 40)}</option>
+            ))}
+          </select>
+        )}
         <div className="flex justify-between px-2 pb-1 text-[10px] text-slate-500">
           <span>Press Enter to record</span>
           <span>Shift+Enter for newline</span>

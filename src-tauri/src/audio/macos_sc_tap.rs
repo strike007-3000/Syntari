@@ -164,6 +164,7 @@ impl ScreenCaptureAudioTap {
                         let cur_len = b.len();
                         let over = cur_len.saturating_sub(MAX_BUF);
                         b.drain(..over);
+                        cap_clone.sys_dropped.fetch_add(over, Ordering::Relaxed);
                         if rms_lvl > 0.001 && cur_len % 16_000 < out.len() {
                             eprintln!("[SCKit Tap] buf: {} samples, rms: {:.5}", cur_len, rms_lvl);
                         }

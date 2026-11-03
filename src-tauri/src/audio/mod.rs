@@ -12,7 +12,7 @@ use crate::ai::{engine::FoundryEngine, Transcript};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
@@ -31,6 +31,9 @@ pub struct Capture {
     pub sys: Mutex<VecDeque<f32>>,
     pub mic_lvl: AtomicU32,
     pub sys_lvl: AtomicU32,
+    // Samples the callbacks trimmed off the ring buffers since the drain thread last looked.
+    pub mic_dropped: AtomicUsize,
+    pub sys_dropped: AtomicUsize,
 }
 
 #[derive(Serialize)]
@@ -78,12 +81,13 @@ where
             move |d: &[T], _| {
                 out.clear();
                 rs.push(d.chunks(ch).map(|f| f.iter().map(|&x| cpal::Sample::to_sample::<f32>(x)).sum::<f32>() / ch as f32), &mut out);
-                let (buf, lvl) = if is_mic { (&cap.mic, &cap.mic_lvl) } else { (&cap.sys, &cap.sys_lvl) };
+                let (buf, lvl, dropped) = if is_mic { (&cap.mic, &cap.mic_lvl, &cap.mic_dropped) } else { (&cap.sys, &cap.sys_lvl, &cap.sys_dropped) };
                 lvl.store(dsp::rms(&out).to_bits(), Ordering::Relaxed);
                 let mut b = buf.lock().unwrap();
                 b.extend(out.iter().copied());
                 let over = b.len().saturating_sub(MAX_BUF);
                 b.drain(..over);
+                dropped.fetch_add(over, Ordering::Relaxed);
             },
             |e| eprintln!("audio stream error: {e}"),
             None,
@@ -208,6 +212,14 @@ pub fn start(
             };
             if stopping || has_window_samples || has_silence_gap || last.elapsed() >= Duration::from_secs(WINDOW_SECS) {
                 last = Instant::now();
+
+                // Trimmed samples are older than anything still buffered: count them so chunk times stay on the wall clock.
+                let (sys_lost, mic_lost) = (cap.sys_dropped.swap(0, Ordering::Relaxed), cap.mic_dropped.swap(0, Ordering::Relaxed));
+                if sys_lost + mic_lost > 0 {
+                    eprintln!("[Audio] transcription fell behind real time: dropped {:.1}s system / {:.1}s mic audio", sys_lost as f32 / 16_000.0, mic_lost as f32 / 16_000.0);
+                }
+                sys_done += sys_lost;
+                mic_done += mic_lost;
 
                 // Drain to the silence gap when one exists, otherwise drain all-but-OVERLAP.
                 let (mut sys, sys_new) = {
