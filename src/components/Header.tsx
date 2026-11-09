@@ -29,7 +29,7 @@ export default function Header() {
   useEffect(() => {
     const subs = [
       listen<{ name: string; percent: number }>("model-progress", (e) =>
-        setModelMsg(e.payload.percent < 0 ? "Verifying local models…" : `Downloading ${e.payload.name} (one-time) ${Math.round(e.payload.percent)}%`)),
+        setModelMsg(e.payload.percent < 0 ? "Verifying local models…" : `Downloading ${e.payload.name} ${Math.round(e.payload.percent)}% (one-time; Start unlocks when done)`)),
       listen("models-ready", () => { setModelMsg(null); setModelsReady(true); }),
       listen<string>("model-error", (e) => setModelMsg(`AI unavailable: ${e.payload}`)),
     ];
@@ -57,6 +57,9 @@ export default function Header() {
     <header className="flex items-center justify-between gap-4 whitespace-nowrap border-b border-ink-700 bg-ink-900 px-4 py-2">
       <div className="flex min-w-0 items-center gap-3 overflow-hidden">
         <h1 className="text-lg font-semibold tracking-wide">Syntari</h1>
+        {modelMsg && (
+          <span className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/15 px-2.5 py-0.5 text-xs text-amber-400" title="One-time download of the on-device models; recording unlocks when it finishes">{modelMsg}</span>
+        )}
         {version && <span className="font-mono text-xs text-slate-500" title="Compare with the latest GitHub Release">v{version}</span>}
         <span title="No audio or text leaves your device" className="flex items-center gap-1 rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-xs text-emerald-400">
           <Shield size={12} /> On-device only
@@ -67,9 +70,6 @@ export default function Header() {
           <span className="text-slate-600">·</span>
           <span className="font-medium text-slate-100">phi-4-mini</span>
         </span>
-        {modelMsg && (
-          <span className="rounded-full border border-amber-500/30 bg-amber-500/15 px-2.5 py-0.5 text-xs text-amber-400">{modelMsg}</span>
-        )}
         {dbError && (
           <button
             type="button"

@@ -503,14 +503,16 @@ impl FoundryEngine {
     }
 
     /// Summarize a whole transcript. Long transcripts are summarized in segments, then merged.
-    pub async fn summarize(&self, chunks: &[TranscriptChunk]) -> Result<String, String> {
+    pub async fn summarize(&self, chunks: &[TranscriptChunk], on_part: impl Fn(usize, usize)) -> Result<String, String> {
         if chunks.is_empty() {
             return Err("Transcript is empty".into());
         }
         const SEGMENT_CHARS: usize = 6000; // keeps each prompt well inside the small model's context
         let sys = "You summarize meeting transcripts. Write a concise markdown summary: a short overview paragraph, \
             then bullet lists under '### Key Points', '### Decisions', '### Action Items' (omit empty sections). \
-            Use only what the transcript states.";
+            Use only what the transcript states. The transcript is raw system audio, so it may include unrelated content \
+            (ads, sponsor reads, background media, intros to other videos). Ignore anything that is not part of the main \
+            conversation; never report it as a fact, decision or action item.";
         let mut segments = vec![String::new()];
         for c in chunks {
             let line = format!("{}: {}\n", c.speaker, c.text);
@@ -520,12 +522,15 @@ impl FoundryEngine {
             segments.last_mut().unwrap().push_str(&line);
         }
         let mut partials = Vec::new();
+        let total = segments.len() + usize::from(segments.len() > 1); // +1 for the merge pass
         for seg in segments {
+            on_part(partials.len() + 1, total);
             partials.push(self.complete(sys, format!("TRANSCRIPT:\n{seg}\nSUMMARY:")).await?);
         }
         if partials.len() == 1 {
             return Ok(partials.remove(0));
         }
+        on_part(total, total);
         self.complete(sys, format!("Merge these partial summaries of one meeting into a single summary:\n\n{}\n\nSUMMARY:", partials.join("\n\n---\n\n"))).await
     }
 

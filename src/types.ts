@@ -12,6 +12,8 @@ export interface TranscriptChunk {
   start?: number;
   /** end time in seconds */
   end?: number;
+  /** hidden from summaries (e.g. an ad picked up by system audio) */
+  excluded?: boolean;
 }
 
 export interface Note {

@@ -5,7 +5,7 @@ use ai::engine::{EnhancedResult, FoundryEngine, InsightItem};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_sql::{Builder as Sql, Migration, MigrationKind};
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -244,7 +244,7 @@ async fn extract_insights(app: AppHandle, since_ms: u64) -> Result<Vec<InsightIt
 async fn summarize_transcript(app: AppHandle, chunks: Vec<ai::engine::TranscriptChunk>) -> Result<String, String> {
     let st = app.state::<AppState>();
     let engine = st.ai_engine.lock().await;
-    engine.summarize(&chunks).await
+    engine.summarize(&chunks, |i, n| { let _ = app.emit("summarize-progress", serde_json::json!({ "part": i, "total": n })); }).await
 }
 
 pub fn run() {
@@ -267,6 +267,11 @@ pub fn run() {
         version: 4,
         description: "citation_start",
         sql: include_str!("../migrations/004_citation_start.sql"),
+        kind: MigrationKind::Up,
+    }, Migration {
+        version: 5,
+        description: "transcript_excluded",
+        sql: include_str!("../migrations/005_transcript_excluded.sql"),
         kind: MigrationKind::Up,
     }];
 

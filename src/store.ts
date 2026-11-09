@@ -44,6 +44,7 @@ interface State {
   pushChunk: (c: TranscriptChunk) => void;
   setLevels: (l: AudioLevels) => void;
   inspect: (chunkId: number | null) => void;
+  toggleExcluded: (chunkId: number) => void;
   pushAutoNote: (item: InsightItem, tsMs: number) => void;
   acceptSuggestion: (id: string) => void;
   dismissSuggestion: (id: string) => void;
@@ -174,10 +175,10 @@ export const useStore = create<State>((set, get) => ({
 
   async summarize() {
     const { transcript, sessionId } = get();
-    if (!transcript.length) throw new Error("No transcript to summarize");
+    if (!transcript.some((c) => !c.excluded)) throw new Error("No transcript to summarize");
     set({ summarizing: true });
     try {
-      const chunks = [...transcript]
+      const chunks = transcript.filter((c) => !c.excluded)
         .sort((a, b) => a.ts - b.ts)
         .map((c) => ({ start: c.start ?? c.ts / 1000, end: c.end ?? c.ts / 1000, speaker: c.speaker, text: c.text }));
       const summary = await invoke<string>("summarize_transcript", { chunks });
@@ -375,7 +376,7 @@ export const useStore = create<State>((set, get) => ({
         owner: r.owner ?? undefined, due: r.due ?? undefined, done: !!r.done, auto: !!r.auto,
         citation: r.citation_quote ? { chunkIds: [], quote: r.citation_quote, start: r.citation_start ?? undefined } : undefined,
       })),
-      transcript: chunks.map((r) => ({ id: r.chunk_id, speaker: r.speaker, text: r.text, ts: r.ts_ms })),
+      transcript: chunks.map((r) => ({ id: r.chunk_id, speaker: r.speaker, text: r.text, ts: r.ts_ms, excluded: !!r.excluded })),
     });
   },
 
@@ -413,4 +414,12 @@ export const useStore = create<State>((set, get) => ({
 
   setLevels: (levels) => set({ levels }),
   inspect: (focusChunk) => set({ focusChunk }),
+  toggleExcluded(chunkId) {
+    const c = get().transcript.find((x) => x.id === chunkId);
+    if (!c) return;
+    const excluded = !c.excluded;
+    set((s) => ({ transcript: s.transcript.map((x) => (x.id === chunkId ? { ...x, excluded } : x)) }));
+    const { sessionId } = get();
+    persist((d) => d.execute("UPDATE transcript SET excluded=? WHERE session_id=? AND chunk_id=?", [excluded ? 1 : 0, sessionId, chunkId]));
+  },
 }));
