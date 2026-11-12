@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
 import { Shield, Mic, Speaker, Play, Square, AlertTriangle } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { useStore } from "../store";
-import { fmtClock } from "../types";
+import { AudioLevels, fmtClock } from "../types";
 import { toMarkdown } from "./NotesDashboard";
 
 const Meter = ({ label, icon, v }: { label: string; icon: React.ReactNode; v: number }) => (
@@ -16,27 +15,28 @@ const Meter = ({ label, icon, v }: { label: string; icon: React.ReactNode; v: nu
   </div>
 );
 
+// Levels are polled 10x a second: local state here, so only the meters re-render, not the whole app.
+function Meters() {
+  const running = useStore((s) => s.running);
+  const [levels, setLevels] = useState<AudioLevels>({ mic: 0, system: 0 });
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => invoke<AudioLevels>("get_audio_levels").then(setLevels).catch(() => {}), 100);
+    return () => clearInterval(t);
+  }, [running]);
+  return (
+    <>
+      <Meter label="Mic" icon={<Mic size={14} />} v={levels.mic} />
+      <Meter label="Remote" icon={<Speaker size={14} />} v={levels.system} />
+    </>
+  );
+}
+
 export default function Header() {
-  const { running, sessionElapsedSeconds, levels, start, stop, tickTimer, setScreen, loaded, notes, summary, dbError, dismissDbError, backup } = useStore();
+  const { running, sessionElapsedSeconds, modelMsg, modelsReady, start, stop, tickTimer, setScreen, loaded, notes, summary, summaryStale, dbError, dismissDbError, backup } = useStore();
   const [version, setVersion] = useState("");
   useEffect(() => { getVersion().then(setVersion).catch(() => {}); }, []);
   const [hasSystemAudio, setHasSystemAudio] = useState<boolean | null>(null);
-
-  // null = no status line; string = status line for the one-time model download or an init error
-  const [modelMsg, setModelMsg] = useState<string | null>(null);
-  // Start stays disabled until the backend reports the models loaded
-  const [modelsReady, setModelsReady] = useState(false);
-  useEffect(() => {
-    const subs = [
-      listen<{ name: string; percent: number }>("model-progress", (e) =>
-        setModelMsg(e.payload.percent < 0 ? "Verifying local models…" : `Downloading ${e.payload.name} (one-time) ${Math.round(e.payload.percent)}%`)),
-      listen("models-ready", () => { setModelMsg(null); setModelsReady(true); }),
-      listen<string>("model-error", (e) => setModelMsg(`AI unavailable: ${e.payload}`)),
-    ];
-    // query only after listeners are registered, so a ready event can't slip between query and listen
-    Promise.all(subs).then(() => invoke<boolean>("models_ready")).then(setModelsReady).catch(() => {});
-    return () => void subs.forEach((p) => p.then((off) => off()));
-  }, []);
 
   useEffect(() => {
     invoke<{ system_audio: boolean }>("check_permissions")
@@ -57,6 +57,9 @@ export default function Header() {
     <header className="flex items-center justify-between gap-4 whitespace-nowrap border-b border-ink-700 bg-ink-900 px-4 py-2">
       <div className="flex min-w-0 items-center gap-3 overflow-hidden">
         <h1 className="text-lg font-semibold tracking-wide">Syntari</h1>
+        {modelMsg && (
+          <span className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/15 px-2.5 py-0.5 text-xs text-amber-400" title="One-time download of the on-device models; recording unlocks when it finishes">{modelMsg}</span>
+        )}
         {version && <span className="font-mono text-xs text-slate-500" title="Compare with the latest GitHub Release">v{version}</span>}
         <span title="No audio or text leaves your device" className="flex items-center gap-1 rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-xs text-emerald-400">
           <Shield size={12} /> On-device only
@@ -67,9 +70,6 @@ export default function Header() {
           <span className="text-slate-600">·</span>
           <span className="font-medium text-slate-100">phi-4-mini</span>
         </span>
-        {modelMsg && (
-          <span className="rounded-full border border-amber-500/30 bg-amber-500/15 px-2.5 py-0.5 text-xs text-amber-400">{modelMsg}</span>
-        )}
         {dbError && (
           <button
             type="button"
@@ -92,8 +92,7 @@ export default function Header() {
         )}
       </div>
       <div className="flex shrink-0 items-center gap-4">
-        <Meter label="Mic" icon={<Mic size={14} />} v={levels.mic} />
-        <Meter label="Remote" icon={<Speaker size={14} />} v={levels.system} />
+        <Meters />
         {!running && (
           <>
             <button
@@ -103,13 +102,13 @@ export default function Header() {
               ← Meetings
             </button>
             <button
-              onClick={() => navigator.clipboard.writeText(toMarkdown(notes, summary))}
+              onClick={() => navigator.clipboard.writeText(toMarkdown(notes, summary, summaryStale))}
               className="rounded-md border border-ink-700 bg-ink-800 px-2.5 py-1 text-xs text-slate-300 transition-colors hover:text-white"
             >
               Copy Markdown
             </button>
             <button
-              onClick={() => invoke("export_markdown", { content: toMarkdown(notes, summary) }).catch((e) => alert(String(e)))}
+              onClick={() => invoke("export_markdown", { content: toMarkdown(notes, summary, summaryStale) }).catch((e) => alert(String(e)))}
               className="rounded-md border border-ink-700 bg-ink-800 px-2.5 py-1 text-xs text-slate-300 transition-colors hover:text-white"
               title="Save to your Downloads folder"
             >

@@ -12,6 +12,8 @@ export interface TranscriptChunk {
   start?: number;
   /** end time in seconds */
   end?: number;
+  /** hidden from summaries (e.g. an ad picked up by system audio) */
+  excluded?: boolean;
 }
 
 export interface Note {
@@ -28,7 +30,6 @@ export interface Note {
   /** came from AI insight extraction, not typed by the user */
   auto?: boolean;
   citation?: {
-    chunkIds: number[];
     quote: string;
     start?: number;
     end?: number;
@@ -41,7 +42,6 @@ export interface NoteExpandedPayload {
   owner?: string | null;
   due?: string | null;
   enhanced_text: string;
-  raw_shorthand: string;
   citation_start: number;
   citation_end: number;
   citation_quote: string;

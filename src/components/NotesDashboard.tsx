@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useStore } from "../store";
@@ -88,8 +89,8 @@ function Item({ n }: { n: Note }) {
   );
 }
 
-export const toMarkdown = (notes: Note[], summary = "") =>
-  [summary && `## Summary\n${summary}`, ...SECTIONS.map(({ kind, title }) => {
+export const toMarkdown = (notes: Note[], summary = "", stale = false) =>
+  [summary && `## Summary${stale ? " (out of date: excluded transcript lines changed, regenerate)" : ""}\n${summary}`, ...SECTIONS.map(({ kind, title }) => {
     const items = notes.filter((n) => n.kind === kind && n.status !== "suggested");
     if (!items.length) return "";
     const lines = items.map((n) =>
@@ -100,8 +101,27 @@ export const toMarkdown = (notes: Note[], summary = "") =>
     return `## ${title}\n${lines.join("\n")}`;
   })].filter(Boolean).join("\n\n");
 
+// elapsed time and part counter so a slow on-device summary doesn't look like a hang
+function useSummarizeStatus(active: boolean) {
+  const [secs, setSecs] = useState(0);
+  const [part, setPart] = useState<{ part: number; total: number } | null>(null);
+  // listener lives for the component's lifetime so it is registered before summarize() invokes the backend
+  useEffect(() => {
+    const sub = listen<{ part: number; total: number }>("summarize-progress", (e) => setPart(e.payload));
+    return () => { sub.then((off) => off()); };
+  }, []);
+  useEffect(() => {
+    if (!active) return;
+    setSecs(0); setPart(null);
+    const t = setInterval(() => setSecs((s) => s + 1), 1000);
+    return () => clearInterval(t);
+  }, [active]);
+  return active ? `${part && part.total > 1 ? `part ${part.part}/${part.total}, ` : ""}${secs}s` : "";
+}
+
 export default function NotesDashboard() {
-  const { notes, view, setView, summary, summarizing, summarize, transcript, running } = useStore();
+  const { notes, view, setView, summary, summarizing, summaryStale, summarize, transcript, running } = useStore();
+  const status = useSummarizeStatus(summarizing);
   return (
     <section className="flex h-full flex-col" aria-label="Notes view">
       <nav className="flex gap-1 border-b border-ink-700 p-2 text-sm">
@@ -129,11 +149,11 @@ export default function NotesDashboard() {
           <div className="space-y-3 text-sm">
             <button
               onClick={() => summarize().catch((e) => alert(String(e)))}
-              disabled={running || summarizing || !transcript.length}
+              disabled={running || summarizing || !transcript.some((c) => !c.excluded)}
               title={running ? "Stop the session first" : undefined}
               className="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-ink-950 disabled:opacity-50"
             >
-              {summarizing ? "Summarizing…" : summary ? "Regenerate summary" : "Generate summary"}
+              {summarizing ? `Summarizing… (${status})` : summary ? "Regenerate summary" : "Generate summary"}
             </button>
             {summary ? (
               <article className="space-y-2 [&_h3]:mt-3 [&_h3]:font-semibold [&_ul]:list-disc [&_ul]:pl-5">
@@ -142,11 +162,14 @@ export default function NotesDashboard() {
             ) : (
               <p className="text-xs text-slate-500">Stop the session, then generate a full summary of the transcript.</p>
             )}
+            {summaryStale && summary && !summarizing && <p className="text-xs text-amber-400">Excluded lines changed since this summary was written. Regenerate to update it.</p>}
+            {summarizing && <p className="text-xs text-slate-500">Running on your device; long meetings can take a few minutes.</p>}
+            {!running && transcript.some((c) => c.excluded) && <p className="text-xs text-slate-500">{transcript.filter((c) => c.excluded).length} transcript line(s) excluded from the summary.</p>}
           </div>
         )}
         {view === "markdown" && (
           <article className="space-y-2 text-sm [&_h2]:mt-3 [&_h2]:font-semibold [&_ul]:list-disc [&_ul]:pl-5">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{toMarkdown(notes, summary)}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{toMarkdown(notes, summary, summaryStale)}</ReactMarkdown>
           </article>
         )}
       </div>
