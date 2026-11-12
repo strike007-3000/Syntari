@@ -65,7 +65,7 @@ Syntari pairs human intentionality with local AI:
 └────────────────────────────────────────────────────────────────────────────┘
                │                       ▲                       ▲
                │ invoke                │ event                 │ event
-               │ expand_note,          │ note-expanded         │ transcript-chunk
+               │ expand_note,          │ summarize-progress    │ transcript-chunk
                │ summarize_transcript, │                       │
                │ extract_insights      │                       │
                ▼                       │                       │

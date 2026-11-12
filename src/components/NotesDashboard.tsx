@@ -120,7 +120,7 @@ function useSummarizeStatus(active: boolean) {
 }
 
 export default function NotesDashboard() {
-  const { notes, view, setView, summary, summarizing, summarize, transcript, running } = useStore();
+  const { notes, view, setView, summary, summarizing, summaryStale, summarize, transcript, running } = useStore();
   const status = useSummarizeStatus(summarizing);
   return (
     <section className="flex h-full flex-col" aria-label="Notes view">
@@ -162,6 +162,7 @@ export default function NotesDashboard() {
             ) : (
               <p className="text-xs text-slate-500">Stop the session, then generate a full summary of the transcript.</p>
             )}
+            {summaryStale && summary && !summarizing && <p className="text-xs text-amber-400">Excluded lines changed since this summary was written. Regenerate to update it.</p>}
             {summarizing && <p className="text-xs text-slate-500">Running on your device; long meetings can take a few minutes.</p>}
             {!running && transcript.some((c) => c.excluded) && <p className="text-xs text-slate-500">{transcript.filter((c) => c.excluded).length} transcript line(s) excluded from the summary.</p>}
           </div>

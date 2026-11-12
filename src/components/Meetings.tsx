@@ -9,7 +9,7 @@ const dayLabel = (ms: number) => {
 };
 
 export default function Meetings() {
-  const { listSessions, loadSession, newMeeting, running, deleteSession, renameSession } = useStore();
+  const { listSessions, loadSession, newMeeting, running, deleteSession, renameSession, modelMsg } = useStore();
   const [renaming, setRenaming] = useState<number | null>(null);
   // An in-flight rename must settle before any button navigates away; a failed save blocks the action so the typed title isn't lost.
   const saving = useRef<Promise<boolean>>(Promise.resolve(true));
@@ -30,6 +30,7 @@ export default function Meetings() {
     <div className="flex h-full flex-col overflow-y-auto p-8">
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Meetings</h1>
+        {modelMsg && <span className="rounded-full border border-amber-500/30 bg-amber-500/15 px-2.5 py-0.5 text-xs text-amber-400">{modelMsg}</span>}
         <button onClick={() => afterSave(newMeeting)} disabled={running} className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-ink-950 disabled:opacity-50">New meeting</button>
       </div>
       <input

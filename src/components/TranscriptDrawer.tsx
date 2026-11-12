@@ -31,9 +31,12 @@ export default function TranscriptDrawer() {
       >
         {transcript.length === 0 && <p className="text-xs text-slate-500">Live transcript appears here once you start.</p>}
         {transcript.map((c) => (
-          <p key={c.id} id={`chunk-${c.id}`} className={`group rounded p-1 ${c.id === focusChunk ? "bg-accent/20" : ""} ${c.excluded ? "opacity-40 line-through" : ""}`}>
-            <span className="font-mono text-xs text-slate-500">{fmtClock(c.ts)} </span>
-            <b className={c.speaker === "You" ? "text-emerald-400" : "text-accent"}>[{c.speaker}]</b> {c.text}
+          <p key={c.id} id={`chunk-${c.id}`} className={`group rounded p-1 ${c.id === focusChunk ? "bg-accent/20" : ""}`}>
+            {/* only the text is dimmed, so the "include" button on an excluded line stays readable */}
+            <span className={c.excluded ? "opacity-40 line-through" : ""}>
+              <span className="font-mono text-xs text-slate-500">{fmtClock(c.ts)} </span>
+              <b className={c.speaker === "You" ? "text-emerald-400" : "text-accent"}>[{c.speaker}]</b> {c.text}
+            </span>
             {!running && !summarizing && (
               <button onClick={() => toggleExcluded(c.id)} title={c.excluded ? "Include in summary again" : "Exclude from summary (e.g. an ad)"} className="ml-1 text-xs text-slate-500 opacity-0 hover:text-slate-200 focus:opacity-100 group-hover:opacity-100">
                 {c.excluded ? "↩ include" : "✕ exclude"}

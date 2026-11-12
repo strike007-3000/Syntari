@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
-// Whisper-tiny needs sentence-sized context; 5 s windows / 0.5 s slices were chopping speech mid-phrase.
+// Whisper needs sentence-sized context; 5 s windows / 0.5 s slices were chopping speech mid-phrase.
 const WINDOW_SECS: u64 = 12;
 const MAX_BUF: usize = 16_000 * 30; // circular cap: 30 s per track, RAM only
 // Samples kept in the ring buffer after each window drain to give Whisper sentence context.
@@ -140,7 +140,7 @@ pub fn start(
     app: AppHandle,
     cap: Arc<Capture>,
     tr: Arc<Transcript>,
-    engine: Arc<tokio::sync::Mutex<FoundryEngine>>,
+    engine: Arc<tokio::sync::RwLock<FoundryEngine>>,
     offset_secs: f64, // resumed sessions continue the earlier timeline
 ) -> Result<Session, String> {
     let stop = Arc::new(AtomicBool::new(false));
@@ -170,7 +170,6 @@ pub fn start(
             Ok(tap) => Some(tap),
             Err(e) => {
                 eprintln!("[Syntari SCKit] SCKit tap not available ({e}), attempting device fallback");
-                let _ = app.emit("engine-error", format!("ScreenCaptureKit notice: {e}"));
                 None
             }
         };
@@ -222,7 +221,7 @@ pub fn start(
                 mic_done += mic_lost;
 
                 // Drain to the silence gap when one exists, otherwise drain all-but-OVERLAP.
-                let (mut sys, sys_new) = {
+                let (mut sys, sys_new, sys_left) = {
                     let mut b = cap.sys.lock().unwrap();
                     let total = b.len();
                     let drain_to = if total > MIN_SEGMENT {
@@ -234,12 +233,17 @@ pub fn start(
                         total.saturating_sub(OVERLAP_SAMPLES)
                     };
                     let drained: Vec<f32> = b.drain(..drain_to).collect();
-                    (drained, drain_to)
+                    (drained, drain_to, total - drain_to)
                 };
                 // Drain mic by the same length as sys so the AEC reference stays sample-aligned.
                 let (mut mic, mic_new) = {
                     let mut b = cap.mic.lock().unwrap();
-                    let n = sys_new.min(b.len());
+                    let mut n = sys_new.min(b.len());
+                    // Mic audio with no system audio to pair with: the loopback is silent, stalled or absent
+                    // (no screen-recording permission; WASAPI sends nothing while nothing plays). Transcribe it
+                    // anyway, or the mic would sit here until the ring buffer drops it.
+                    let unpaired = (b.len() - n).saturating_sub(sys_left);
+                    if stopping || unpaired >= 16_000 * WINDOW_SECS as usize / 2 { n += unpaired; }
                     (b.drain(..n).collect::<Vec<f32>>(), n)
                 };
 
@@ -273,7 +277,7 @@ pub fn start(
                         let speaker_str = speaker.to_string();
 
                         let transcription_res = rt.block_on(async {
-                            let guard = engine_clone.lock().await;
+                            let guard = engine_clone.read().await;
                             if guard.is_ready() {
                                 guard.transcribe_buffer(&wav_bytes, &speaker_str).await
                             } else {

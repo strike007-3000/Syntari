@@ -5,7 +5,7 @@ import { fmtClock } from "../types";
 export default function ShorthandPad() {
   const [text, setText] = useState("");
   const [momentTs, setMomentTs] = useState(""); // "" = end of transcript; else the chunk start (ms) a reopened-meeting note refers to
-  const { notes: allNotes, addLine, transcript, sessionElapsedSeconds, running } = useStore();
+  const { notes: allNotes, addLine, transcript, running } = useStore();
   const sorted = useMemo(() => [...transcript].sort((a, b) => a.ts - b.ts), [transcript]);
   const notes = allNotes.filter((n) => !n.auto); // only what the user typed; AI suggestions live in the dashboard
   const listEndRef = useRef<HTMLDivElement>(null);
@@ -18,18 +18,8 @@ export default function ShorthandPad() {
     const trimmed = text.trim();
     if (!trimmed) return;
 
-    // Pull accurate audio timestamp
-    let ts = 0;
-    if (!running && momentTs !== "") {
-      ts = Number(momentTs);
-    } else if (transcript.length > 0) {
-      const last = transcript[transcript.length - 1];
-      ts = last.end !== undefined ? last.end * 1000 : last.ts;
-    } else if (sessionElapsedSeconds > 0) {
-      ts = sessionElapsedSeconds * 1000;
-    }
-
-    addLine(trimmed, ts);
+    // reviewing a stored meeting: the picked moment; otherwise the store stamps it
+    addLine(trimmed, !running && momentTs !== "" ? Number(momentTs) : undefined);
     setText("");
     setMomentTs("");
   };

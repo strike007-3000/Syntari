@@ -7,23 +7,29 @@ use std::sync::Arc;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_sql::{Builder as Sql, Migration, MigrationKind};
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::RwLock;
 
 pub struct AppState {
     pub cap: Arc<audio::Capture>,
     pub tr: Arc<ai::Transcript>,
-    pub ai_engine: Arc<AsyncMutex<FoundryEngine>>,
+    // read-locked by users so transcription and the chat model run side by side; written once when the models load
+    pub ai_engine: Arc<RwLock<FoundryEngine>>,
+    pub model_error: std::sync::Mutex<Option<String>>,
     pub session: std::sync::Mutex<Option<(audio::Session, Instant)>>,
 }
 
 fn models_loaded(st: &AppState) -> bool {
-    // try_lock: the engine is only locked briefly by in-flight work, so a busy lock counts as ready
-    st.ai_engine.try_lock().map(|e| e.is_ready()).unwrap_or(true)
+    // only the loader takes the write lock, briefly, as it installs the ready engine: a busy lock counts as ready
+    st.ai_engine.try_read().map(|e| e.is_ready()).unwrap_or(true)
 }
 
 #[tauri::command]
-fn models_ready(st: State<'_, AppState>) -> bool {
-    models_loaded(&st)
+fn models_ready(st: State<'_, AppState>) -> Result<bool, String> {
+    // a load failure is returned too: the UI may start listening after the one-off model-error event
+    match st.model_error.lock().unwrap().clone() {
+        Some(e) => Err(e),
+        None => Ok(models_loaded(&st)),
+    }
 }
 
 #[tauri::command]
@@ -116,9 +122,11 @@ fn remove_stale_audio() {
 }
 
 #[tauri::command]
-fn stop_syntari_session(st: State<'_, AppState>) -> Result<(), String> {
-    match st.session.lock().unwrap().take() {
-        Some((s, _)) => s.stop(),
+async fn stop_syntari_session(st: State<'_, AppState>) -> Result<(), String> {
+    let session = st.session.lock().unwrap().take();
+    match session {
+        // stopping waits for the last transcription; off the main thread so the window stays responsive
+        Some((s, _)) => tauri::async_runtime::spawn_blocking(move || s.stop()).await.map_err(|e| e.to_string())?,
         None => Ok(()),
     }
 }
@@ -172,8 +180,6 @@ fn open_system_settings(pane: Option<String>) {
 #[tauri::command]
 async fn expand_note(
     app: AppHandle,
-    id: String,
-    _kind: String,
     text: String,
     ts_ms: u64,
     context: Option<Vec<ai::engine::TranscriptChunk>>,
@@ -198,52 +204,24 @@ async fn expand_note(
     let keystroke_secs = ai::ms_to_secs(ts_ms);
 
     // 3. Perform inference
-    let engine = st.ai_engine.lock().await;
-    let result = engine
-        .expand_shorthand(&text, keystroke_secs, &window_chunks)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // 4. Emit event for listeners
-    use tauri::Emitter;
-    let _ = app.emit(
-        "note-expanded",
-        serde_json::json!({
-            "id": id,
-            "category": result.category,
-            "owner": result.owner,
-            "due": result.due,
-            "enhanced_text": result.enhanced_text,
-            "raw_shorthand": result.raw_shorthand,
-            "citation_start": result.citation_start,
-            "citation_end": result.citation_end,
-            "citation_quote": result.citation_quote
-        }),
-    );
-
-    // 5. Also directly return to caller for immediate resolution
-    Ok(result)
+    let engine = st.ai_engine.read().await;
+    engine.expand_shorthand(&text, keystroke_secs, &window_chunks).await
 }
 
+/// Extracts from the chunks after index `from` and returns the next index. An index, not a time:
+/// chunks are stamped with their audio start but arrive seconds later, so a time cursor skipped late ones.
 #[tauri::command]
-async fn extract_insights(app: AppHandle, since_ms: u64) -> Result<Vec<InsightItem>, String> {
+async fn extract_insights(app: AppHandle, from: usize) -> Result<(Vec<InsightItem>, usize), String> {
     let st = app.state::<AppState>();
-    let chunks: Vec<_> = st
-        .tr
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|c| (c.start * 1000.0) as u64 >= since_ms)
-        .cloned()
-        .collect();
-    let engine = st.ai_engine.lock().await;
-    engine.extract_insights(&chunks).await
+    let chunks: Vec<_> = st.tr.lock().unwrap().iter().skip(from).cloned().collect();
+    let engine = st.ai_engine.read().await;
+    Ok((engine.extract_insights(&chunks).await?, from + chunks.len()))
 }
 
 #[tauri::command]
 async fn summarize_transcript(app: AppHandle, chunks: Vec<ai::engine::TranscriptChunk>) -> Result<String, String> {
     let st = app.state::<AppState>();
-    let engine = st.ai_engine.lock().await;
+    let engine = st.ai_engine.read().await;
     engine.summarize(&chunks, |i, n| { let _ = app.emit("summarize-progress", serde_json::json!({ "part": i, "total": n })); }).await
 }
 
@@ -285,34 +263,34 @@ pub fn run() {
                 app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from(".")).join("models")
             });
 
-            let engine = Arc::new(AsyncMutex::new(FoundryEngine::new()));
-            let engine_clone = Arc::clone(&engine);
+            let engine = Arc::new(RwLock::new(FoundryEngine::new()));
+            // managed before the loader starts, so the loader can record a failure in it
+            app.manage(AppState {
+                cap: Arc::default(),
+                tr: Arc::default(),
+                ai_engine: Arc::clone(&engine),
+                model_error: Default::default(),
+                session: std::sync::Mutex::new(None),
+            });
             let handle = app.handle().clone();
 
             // Asynchronously initialize local models in background
             tauri::async_runtime::spawn(async move {
-                use tauri::Emitter;
                 let h = handle.clone();
                 let progress: ai::engine::Progress =
                     Arc::new(move |name, pct| { let _ = h.emit("model-progress", serde_json::json!({ "name": name, "percent": pct })); });
                 match FoundryEngine::load(resource_path, progress).await {
                     Err(e) => {
                         eprintln!("[Syntari AI Init Error]: {}", e);
+                        *handle.state::<AppState>().model_error.lock().unwrap() = Some(e.clone());
                         let _ = handle.emit("model-error", e);
                     }
                     Ok(loaded) => {
-                    *engine_clone.lock().await = loaded;
-                    let _ = handle.emit("models-ready", ());
-                    println!("[Syntari AI]: Offline Foundry Local models loaded successfully.");
+                        *engine.write().await = loaded;
+                        let _ = handle.emit("models-ready", ());
+                        println!("[Syntari AI]: Offline Foundry Local models loaded successfully.");
                     }
                 }
-            });
-
-            app.manage(AppState {
-                cap: Arc::default(),
-                tr: Arc::default(),
-                ai_engine: engine,
-                session: std::sync::Mutex::new(None),
             });
             Ok(())
         })

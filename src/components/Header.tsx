@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
 import { Shield, Mic, Speaker, Play, Square, AlertTriangle } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { useStore } from "../store";
-import { fmtClock } from "../types";
+import { AudioLevels, fmtClock } from "../types";
 import { toMarkdown } from "./NotesDashboard";
 
 const Meter = ({ label, icon, v }: { label: string; icon: React.ReactNode; v: number }) => (
@@ -16,27 +15,28 @@ const Meter = ({ label, icon, v }: { label: string; icon: React.ReactNode; v: nu
   </div>
 );
 
+// Levels are polled 10x a second: local state here, so only the meters re-render, not the whole app.
+function Meters() {
+  const running = useStore((s) => s.running);
+  const [levels, setLevels] = useState<AudioLevels>({ mic: 0, system: 0 });
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => invoke<AudioLevels>("get_audio_levels").then(setLevels).catch(() => {}), 100);
+    return () => clearInterval(t);
+  }, [running]);
+  return (
+    <>
+      <Meter label="Mic" icon={<Mic size={14} />} v={levels.mic} />
+      <Meter label="Remote" icon={<Speaker size={14} />} v={levels.system} />
+    </>
+  );
+}
+
 export default function Header() {
-  const { running, sessionElapsedSeconds, levels, start, stop, tickTimer, setScreen, loaded, notes, summary, dbError, dismissDbError, backup } = useStore();
+  const { running, sessionElapsedSeconds, modelMsg, modelsReady, start, stop, tickTimer, setScreen, loaded, notes, summary, dbError, dismissDbError, backup } = useStore();
   const [version, setVersion] = useState("");
   useEffect(() => { getVersion().then(setVersion).catch(() => {}); }, []);
   const [hasSystemAudio, setHasSystemAudio] = useState<boolean | null>(null);
-
-  // null = no status line; string = status line for the one-time model download or an init error
-  const [modelMsg, setModelMsg] = useState<string | null>(null);
-  // Start stays disabled until the backend reports the models loaded
-  const [modelsReady, setModelsReady] = useState(false);
-  useEffect(() => {
-    const subs = [
-      listen<{ name: string; percent: number }>("model-progress", (e) =>
-        setModelMsg(e.payload.percent < 0 ? "Verifying local models…" : `Downloading ${e.payload.name} ${Math.round(e.payload.percent)}% (one-time; Start unlocks when done)`)),
-      listen("models-ready", () => { setModelMsg(null); setModelsReady(true); }),
-      listen<string>("model-error", (e) => setModelMsg(`AI unavailable: ${e.payload}`)),
-    ];
-    // query only after listeners are registered, so a ready event can't slip between query and listen
-    Promise.all(subs).then(() => invoke<boolean>("models_ready")).then(setModelsReady).catch(() => {});
-    return () => void subs.forEach((p) => p.then((off) => off()));
-  }, []);
 
   useEffect(() => {
     invoke<{ system_audio: boolean }>("check_permissions")
@@ -92,8 +92,7 @@ export default function Header() {
         )}
       </div>
       <div className="flex shrink-0 items-center gap-4">
-        <Meter label="Mic" icon={<Mic size={14} />} v={levels.mic} />
-        <Meter label="Remote" icon={<Speaker size={14} />} v={levels.system} />
+        <Meters />
         {!running && (
           <>
             <button

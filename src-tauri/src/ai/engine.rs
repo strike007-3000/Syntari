@@ -29,7 +29,6 @@ pub struct EnhancedResult {
     pub owner: Option<String>,
     pub due: Option<String>,
     pub enhanced_text: String,
-    pub raw_shorthand: String,
     pub citation_start: f64,
     pub citation_end: f64,
     pub citation_quote: String,
@@ -42,6 +41,7 @@ pub struct FoundryEngine {
     audio_session: Option<AudioSession>,
     chat_session: Option<ChatSession>,
     is_ready: bool,
+    chat_lock: tokio::sync::Mutex<()>, // one chat request at a time; transcription does not wait behind it
 }
 
 /// The only network access in the app: one-time model download when the cache is empty.
@@ -168,6 +168,7 @@ impl FoundryEngine {
             audio_session: None,
             chat_session: None,
             is_ready: false,
+            chat_lock: Default::default(),
         }
     }
 
@@ -241,6 +242,7 @@ impl FoundryEngine {
             audio_session: Some(audio_session),
             chat_session: Some(chat_session),
             is_ready: true,
+            chat_lock: Default::default(),
         })
     }
 
@@ -300,16 +302,9 @@ impl FoundryEngine {
             return Ok(Vec::new());
         }
 
-        // Discard Whisper hallucination loops: any 4-gram repeating >3 times signals looping.
-        let words: Vec<&str> = trimmed.split_whitespace().collect();
-        if words.len() >= 16 {
-            let looping = words.windows(4).enumerate().any(|(i, gram)| {
-                words.windows(4).skip(i + 1).filter(|w| *w == gram).count() > 3
-            });
-            if looping {
-                eprintln!("[Whisper] Hallucination loop detected, discarding chunk");
-                return Ok(Vec::new());
-            }
+        if is_looping(trimmed) {
+            eprintln!("[Whisper] Hallucination loop detected, discarding chunk");
+            return Ok(Vec::new());
         }
 
         Ok(vec![TranscriptChunk {
@@ -327,22 +322,18 @@ impl FoundryEngine {
         keystroke_time: f64,
         transcript_history: &[TranscriptChunk],
     ) -> Result<EnhancedResult, String> {
-        let session = match self.chat_session.as_ref() {
-            Some(s) => s,
-            None => {
-                // Graceful fallback when model is not yet loaded: preserve raw shorthand
-                return Ok(EnhancedResult {
-                    category: "discussion".into(),
-                    owner: None,
-                    due: None,
-                    enhanced_text: raw_shorthand.to_string(),
-                    raw_shorthand: raw_shorthand.to_string(),
-                    citation_start: keystroke_time,
-                    citation_end: keystroke_time,
-                    citation_quote: "Offline AI model not yet initialized; preserved original shorthand.".into(),
-                });
-            }
-        };
+        if self.chat_session.is_none() {
+            // Graceful fallback when model is not yet loaded: preserve raw shorthand
+            return Ok(EnhancedResult {
+                category: "discussion".into(),
+                owner: None,
+                due: None,
+                enhanced_text: raw_shorthand.to_string(),
+                citation_start: keystroke_time,
+                citation_end: keystroke_time,
+                citation_quote: "Offline AI model not yet initialized; preserved original shorthand.".into(),
+            });
+        }
 
         // 1. Slice the temporal context window [-45s, +10s]
         let t_min = (keystroke_time - 45.0).max(0.0);
@@ -402,64 +393,9 @@ impl FoundryEngine {
             context_text, raw_shorthand
         );
 
-        // 3. Process structured conversation request through session
-        let request = Request::from_items(vec![
-            Item::system_message(vec![Item::text(system_prompt)]),
-            Item::user_message(vec![Item::text(user_prompt)]),
-        ]);
-
-        let response = session
-            .process_request(request)
-            .await
-            .map_err(|e| format!("Inference error: {e}"))?;
-
-        let mut enhanced_text = String::new();
-        for item in &response.items {
-            if let Some(t) = item.as_text() {
-                enhanced_text.push_str(t);
-            } else if let Some(msg) = item.as_message() {
-                for part in &msg.content {
-                    if let Some(t) = part.as_text() {
-                        enhanced_text.push_str(t);
-                    }
-                }
-            }
-        }
-
-        // The model may or may not repeat "CATEGORY:", so take the first category word on any line before NOTE.
-        eprintln!("[Syntari Inference] model reply: {}", enhanced_text.trim());
-        let mut category = "discussion".to_string();
-        let mut note = String::new();
-        let (mut owner, mut due) = (None, None);
-        let mut found = false;
-        for line in enhanced_text.lines() {
-            let l = line.trim();
-            let field = |v: &str| Some(v.trim().to_string()).filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("none"));
-            // the model doesn't keep the label's case ("Note:" came back in practice)
-            let label = |k: &str| l.get(..k.len()).filter(|p| p.eq_ignore_ascii_case(k)).map(|_| &l[k.len()..]);
-            if let Some(n) = label("NOTE:") {
-                note = n.trim().to_string();
-            } else if let Some(v) = label("OWNER:") {
-                owner = field(v);
-            } else if let Some(v) = label("DUE:") {
-                due = field(v);
-            } else if !found {
-                let lower = l.to_lowercase();
-                // a line echoing the whole "decision | action | risk | discussion" template names several: not an answer
-                let hits: Vec<_> = ["decision", "action", "risk", "discussion"].into_iter().filter(|c| lower.contains(c)).collect();
-                if let [c] = hits[..] {
-                    category = c.to_string();
-                    found = true;
-                }
-            }
-        }
-        if note.is_empty() {
-            note = raw_shorthand.to_string();
-        }
-        // an unchanged note means the model found no grounding, so its category is a guess; the prompt says unsure = discussion
-        if note.eq_ignore_ascii_case(raw_shorthand) {
-            category = "discussion".to_string();
-        }
+        let reply = self.complete(system_prompt, user_prompt).await?;
+        eprintln!("[Syntari Inference] model reply: {reply}");
+        let (category, note, owner, due) = parse_expansion(&reply, raw_shorthand);
         eprintln!("[Syntari Inference] raw=\"{raw_shorthand}\" -> {category}: \"{note}\"");
 
         let (citation_start, citation_end) = match (context_chunks.first(), context_chunks.last()) {
@@ -472,7 +408,6 @@ impl FoundryEngine {
             owner,
             due,
             enhanced_text: note,
-            raw_shorthand: raw_shorthand.to_string(),
             citation_start,
             citation_end,
             citation_quote: context_chunks.iter().map(|c| c.text.as_str()).collect::<Vec<_>>().join(" "),
@@ -482,6 +417,7 @@ impl FoundryEngine {
     /// One-shot LLM call; returns the concatenated text of the response.
     async fn complete(&self, system: &str, user: String) -> Result<String, String> {
         let session = self.chat_session.as_ref().ok_or("AI model not loaded")?;
+        let _one_at_a_time = self.chat_lock.lock().await;
         let request = Request::from_items(vec![
             Item::system_message(vec![Item::text(system)]),
             Item::user_message(vec![Item::text(user)]),
@@ -513,25 +449,30 @@ impl FoundryEngine {
             Use only what the transcript states. The transcript is raw system audio, so it may include unrelated content \
             (ads, sponsor reads, background media, intros to other videos). Ignore anything that is not part of the main \
             conversation; never report it as a fact, decision or action item.";
-        let mut segments = vec![String::new()];
-        for c in chunks {
-            let line = format!("{}: {}\n", c.speaker, c.text);
-            if segments.last().unwrap().len() + line.len() > SEGMENT_CHARS && !segments.last().unwrap().is_empty() {
-                segments.push(String::new());
-            }
-            segments.last_mut().unwrap().push_str(&line);
-        }
-        let mut partials = Vec::new();
-        let total = segments.len() + usize::from(segments.len() > 1); // +1 for the merge pass
+        let segments = pack(chunks.iter().map(|c| format!("{}: {}\n", c.speaker, c.text)), SEGMENT_CHARS);
+        let total = segments.len() + usize::from(segments.len() > 1); // +1 for the merge pass; very long meetings add more
+        let mut done = 0;
+        let mut parts = Vec::new();
         for seg in segments {
-            on_part(partials.len() + 1, total);
-            partials.push(self.complete(sys, format!("TRANSCRIPT:\n{seg}\nSUMMARY:")).await?);
+            done += 1;
+            on_part(done, total.max(done));
+            parts.push(self.complete(sys, format!("TRANSCRIPT:\n{seg}\nSUMMARY:")).await?);
         }
-        if partials.len() == 1 {
-            return Ok(partials.remove(0));
+        // Merge in rounds so a long meeting's partial summaries never outgrow one prompt.
+        while parts.len() > 1 {
+            let mut groups = pack(parts.iter().map(|p| format!("{p}\n\n---\n\n")), SEGMENT_CHARS);
+            if groups.len() >= parts.len() {
+                groups = vec![groups.concat()]; // each partial already fills a prompt: merge the lot rather than loop forever
+            }
+            let mut next = Vec::new();
+            for g in groups {
+                done += 1;
+                on_part(done, total.max(done));
+                next.push(self.complete(sys, format!("Merge these partial summaries of one meeting into a single summary:\n\n{g}\nSUMMARY:")).await?);
+            }
+            parts = next;
         }
-        on_part(total, total);
-        self.complete(sys, format!("Merge these partial summaries of one meeting into a single summary:\n\n{}\n\nSUMMARY:", partials.join("\n\n---\n\n"))).await
+        Ok(parts.remove(0))
     }
 
     /// Extract structured meeting items (decisions, actions, risks) from a transcript window.
@@ -539,11 +480,7 @@ impl FoundryEngine {
         &self,
         chunks: &[TranscriptChunk],
     ) -> Result<Vec<InsightItem>, String> {
-        let session = match self.chat_session.as_ref() {
-            Some(s) => s,
-            None => return Ok(Vec::new()),
-        };
-        if chunks.is_empty() {
+        if self.chat_session.is_none() || chunks.is_empty() {
             return Ok(Vec::new());
         }
 
@@ -561,64 +498,13 @@ impl FoundryEngine {
             DISCUSSION: <key topic discussed>\n\
             Rules: only output items explicitly stated. If nothing significant, output NONE.";
 
-        let user_prompt = format!("TRANSCRIPT:\n{}\n\nEXTRACT ITEMS:", context_text);
-
-        let request = Request::from_items(vec![
-            Item::system_message(vec![Item::text(system_prompt)]),
-            Item::user_message(vec![Item::text(user_prompt)]),
-        ]);
-
-        let response = session
-            .process_request(request)
-            .await
-            .map_err(|e| format!("Inference error: {e}"))?;
-
-        let mut raw = String::new();
-        for item in &response.items {
-            if let Some(t) = item.as_text() {
-                raw.push_str(t);
-            } else if let Some(msg) = item.as_message() {
-                for part in &msg.content {
-                    if let Some(t) = part.as_text() {
-                        raw.push_str(t);
-                    }
-                }
-            }
-        }
-
-        let raw = raw.trim().to_string();
+        let raw = self.complete(system_prompt, format!("TRANSCRIPT:\n{}\n\nEXTRACT ITEMS:", context_text)).await?;
         eprintln!("[Syntari Insights] raw: {:?}", &raw);
-
-        // Discard hallucination loops (same check as Whisper)
-        let words: Vec<&str> = raw.split_whitespace().collect();
-        if words.len() >= 16 {
-            let looping = words.windows(4).enumerate().any(|(i, gram)| {
-                words.windows(4).skip(i + 1).filter(|w| *w == gram).count() > 3
-            });
-            if looping {
-                eprintln!("[Syntari Insights] Hallucination loop detected, discarding");
-                return Ok(Vec::new());
-            }
+        if is_looping(&raw) {
+            eprintln!("[Syntari Insights] Hallucination loop detected, discarding");
+            return Ok(Vec::new());
         }
-
-        let mut items = Vec::new();
-        for line in raw.lines().filter(|l| {
-            let t = l.rsplit(':').next().unwrap_or("").trim().trim_end_matches('.').to_lowercase();
-            !matches!(t.as_str(), "" | "none" | "none provided" | "n/a" | "none stated")
-        }) {
-            let line = line.trim();
-            if let Some(text) = line.strip_prefix("DECISION:") {
-                items.push(InsightItem { kind: "decision".into(), text: text.trim().into(), owner: None, due: None });
-            } else if let Some(rest) = line.strip_prefix("ACTION:") {
-                let (owner, text, due) = parse_action_line(rest.trim());
-                items.push(InsightItem { kind: "action".into(), text, owner: Some(owner), due });
-            } else if let Some(text) = line.strip_prefix("RISK:") {
-                items.push(InsightItem { kind: "risk".into(), text: text.trim().into(), owner: None, due: None });
-            } else if let Some(text) = line.strip_prefix("DISCUSSION:") {
-                items.push(InsightItem { kind: "discussion".into(), text: text.trim().into(), owner: None, due: None });
-            }
-        }
-        Ok(items)
+        Ok(parse_insights(&raw))
     }
 }
 
@@ -636,10 +522,118 @@ fn parse_action_line(s: &str) -> (String, String, Option<String>) {
     }
 }
 
+/// Whisper and the chat model both get stuck repeating themselves: any 4-gram repeating >3 times signals a loop.
+fn is_looping(text: &str) -> bool {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    words.len() >= 16 && words.windows(4).enumerate().any(|(i, gram)| words.windows(4).skip(i + 1).filter(|w| *w == gram).count() > 3)
+}
+
+/// Greedily joins pieces into groups of at most `max` chars (a single oversized piece keeps its own group).
+fn pack(pieces: impl IntoIterator<Item = String>, max: usize) -> Vec<String> {
+    let mut out = vec![String::new()];
+    for p in pieces {
+        if !out.last().unwrap().is_empty() && out.last().unwrap().len() + p.len() > max {
+            out.push(String::new());
+        }
+        out.last_mut().unwrap().push_str(&p);
+    }
+    out
+}
+
+/// Reads the CATEGORY/NOTE/OWNER/DUE reply into (category, note, owner, due); falls back to the raw note as a discussion.
+fn parse_expansion(reply: &str, raw_shorthand: &str) -> (String, String, Option<String>, Option<String>) {
+    // The model may or may not repeat "CATEGORY:", so take the first category word on any line before NOTE.
+    let mut category = "discussion".to_string();
+    let mut note = String::new();
+    let (mut owner, mut due) = (None, None);
+    let mut found = false;
+    for line in reply.lines() {
+        let l = line.trim();
+        let field = |v: &str| Some(v.trim().to_string()).filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("none"));
+        // the model doesn't keep the label's case ("Note:" came back in practice)
+        let label = |k: &str| l.get(..k.len()).filter(|p| p.eq_ignore_ascii_case(k)).map(|_| &l[k.len()..]);
+        if let Some(n) = label("NOTE:") {
+            note = n.trim().to_string();
+        } else if let Some(v) = label("OWNER:") {
+            owner = field(v);
+        } else if let Some(v) = label("DUE:") {
+            due = field(v);
+        } else if !found {
+            let lower = l.to_lowercase();
+            // a line echoing the whole "decision | action | risk | discussion" template names several: not an answer
+            let hits: Vec<_> = ["decision", "action", "risk", "discussion"].into_iter().filter(|c| lower.contains(c)).collect();
+            if let [c] = hits[..] {
+                category = c.to_string();
+                found = true;
+            }
+        }
+    }
+    if note.is_empty() {
+        note = raw_shorthand.to_string();
+    }
+    // an unchanged note means the model found no grounding, so its category is a guess; the prompt says unsure = discussion
+    if note.eq_ignore_ascii_case(raw_shorthand) {
+        category = "discussion".to_string();
+    }
+    (category, note, owner, due)
+}
+
+fn parse_insights(raw: &str) -> Vec<InsightItem> {
+    let mut items = Vec::new();
+    for line in raw.lines().filter(|l| {
+        let t = l.rsplit(':').next().unwrap_or("").trim().trim_end_matches('.').to_lowercase();
+        !matches!(t.as_str(), "" | "none" | "none provided" | "n/a" | "none stated")
+    }) {
+        let line = line.trim();
+        if let Some(text) = line.strip_prefix("DECISION:") {
+            items.push(InsightItem { kind: "decision".into(), text: text.trim().into(), owner: None, due: None });
+        } else if let Some(rest) = line.strip_prefix("ACTION:") {
+            let (owner, text, due) = parse_action_line(rest.trim());
+            items.push(InsightItem { kind: "action".into(), text, owner: Some(owner), due });
+        } else if let Some(text) = line.strip_prefix("RISK:") {
+            items.push(InsightItem { kind: "risk".into(), text: text.trim().into(), owner: None, due: None });
+        } else if let Some(text) = line.strip_prefix("DISCUSSION:") {
+            items.push(InsightItem { kind: "discussion".into(), text: text.trim().into(), owner: None, due: None });
+        }
+    }
+    items
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn free_bytes_reads_the_temp_volume() {
-        assert!(super::free_bytes(&std::env::temp_dir()).is_some_and(|b| b > 0));
+        assert!(free_bytes(&std::env::temp_dir()).is_some_and(|b| b > 0));
+    }
+
+    #[test]
+    fn parses_expansion_reply() {
+        let (c, n, o, d) = parse_expansion("CATEGORY: action\nNote: Dana will send the contract.\nOWNER: Dana\nDUE: none", "contract");
+        assert_eq!((c.as_str(), n.as_str(), o.as_deref(), d), ("action", "Dana will send the contract.", Some("Dana"), None));
+        // unchanged note = no grounding, so the category guess is dropped
+        assert_eq!(parse_expansion("decision\nNOTE: go with B", "go with B").0, "discussion");
+        // a line echoing the template names several categories and is skipped
+        assert_eq!(parse_expansion("CATEGORY: discussion | action | risk | decision\nrisk\nNOTE: x y", "x").0, "risk");
+    }
+
+    #[test]
+    fn parses_insight_lines() {
+        let items = parse_insights("DECISION: Ship Friday\nACTION: Dana - send contract by Monday\nRISK: none\nchatter");
+        assert_eq!(items.len(), 2);
+        assert_eq!((items[1].owner.as_deref(), items[1].text.as_str(), items[1].due.as_deref()), (Some("Dana"), "send contract", Some("Monday")));
+    }
+
+    #[test]
+    fn packs_within_the_limit() {
+        assert_eq!(pack(["aaa", "bbb", "c"].map(String::from), 4), ["aaa", "bbbc"]);
+        assert_eq!(pack(["aaaaaaaa".to_string()], 4), ["aaaaaaaa"]);
+    }
+
+    #[test]
+    fn detects_loops() {
+        assert!(is_looping(&"a b c d ".repeat(5)));
+        assert!(!is_looping("one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen"));
     }
 }

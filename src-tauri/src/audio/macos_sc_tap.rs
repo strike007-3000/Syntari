@@ -88,11 +88,6 @@ impl UnsafeSCStreamOutput for AudioOutputHandler {
                 raw_samples
             };
 
-            let mono_rms = dsp::rms(&mono_samples);
-            if mono_rms > 0.0001 {
-                eprintln!("[SCKit Tap] len: {}, mono_rms: {:.5}", mono_samples.len(), mono_rms);
-            }
-
             // Non-blocking handoff from real-time CoreMedia thread to avoid priority inversion
             if let Err(e) = self.tx.try_send(mono_samples) {
                 eprintln!("[SCKit Tap] Channel send warning: {e}");

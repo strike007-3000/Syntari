@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "./store";
-import { NoteExpandedPayload, TranscriptChunk, AudioLevels } from "./types";
+import { TranscriptChunk } from "./types";
 import Header from "./components/Header";
 import ShorthandPad from "./components/ShorthandPad";
 import NotesDashboard from "./components/NotesDashboard";
@@ -10,21 +10,22 @@ import Meetings from "./components/Meetings";
 import TranscriptDrawer from "./components/TranscriptDrawer";
 
 export default function App() {
-  const { applyExpansion, pushChunk, setLevels, running, screen } = useStore();
+  const { pushChunk, screen } = useStore();
 
   useEffect(() => {
+    const set = useStore.setState;
     const subs = [
       listen<TranscriptChunk>("transcript-chunk", (e) => pushChunk(e.payload)),
-      listen<NoteExpandedPayload>("note-expanded", (e) => applyExpansion(e.payload)),
+      listen<{ name: string; percent: number }>("model-progress", (e) =>
+        set({ modelMsg: e.payload.percent < 0 ? "Verifying local models…" : `Downloading ${e.payload.name} ${Math.round(e.payload.percent)}% (one-time; Start unlocks when done)` })),
+      listen("models-ready", () => set({ modelMsg: null, modelsReady: true })),
+      listen<string>("model-error", (e) => set({ modelMsg: `AI unavailable: ${e.payload}` })),
     ];
+    // query only after listeners are registered, so a ready event can't slip between query and listen;
+    // a load failure from before this window was listening comes back as the rejection
+    Promise.all(subs).then(() => invoke<boolean>("models_ready")).then((modelsReady) => set({ modelsReady })).catch((e) => set({ modelMsg: `AI unavailable: ${e}` }));
     return () => void subs.forEach((p) => p.then((off) => off()));
-  }, [applyExpansion, pushChunk]);
-
-  useEffect(() => {
-    if (!running) return;
-    const t = setInterval(() => invoke<AudioLevels>("get_audio_levels").then(setLevels).catch(() => {}), 100);
-    return () => clearInterval(t);
-  }, [running, setLevels]);
+  }, [pushChunk]);
 
   return (
     <div className="flex h-full flex-col bg-ink-950">

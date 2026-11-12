@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import Database from "@tauri-apps/plugin-sql";
-import { Note, NoteExpandedPayload, TranscriptChunk, AudioLevels, parseShorthand } from "./types";
+import { Note, NoteExpandedPayload, TranscriptChunk, parseShorthand } from "./types";
 
 export type View = "notes" | "summary" | "markdown";
 
@@ -21,7 +21,6 @@ interface State {
   sessionElapsedSeconds: number;
   notes: Note[];
   transcript: TranscriptChunk[];
-  levels: AudioLevels;
   view: View;
   focusChunk: number | null;
   screen: "meetings" | "session";
@@ -31,6 +30,9 @@ interface State {
   newMeeting: () => void;
   summary: string;
   summarizing: boolean;
+  summaryStale: boolean; // exclusions changed after the summary was written
+  modelMsg: string | null; // status line for the one-time model download, or a load error
+  modelsReady: boolean; // Start stays disabled until the backend reports the models loaded
   summarize: () => Promise<void>;
   setView: (v: View) => void;
   tickTimer: () => void;
@@ -42,7 +44,6 @@ interface State {
   applyExpansion: (e: NoteExpandedPayload) => void;
   failExpansion: (id: string) => void;
   pushChunk: (c: TranscriptChunk) => void;
-  setLevels: (l: AudioLevels) => void;
   inspect: (chunkId: number | null) => void;
   toggleExcluded: (chunkId: number) => void;
   pushAutoNote: (item: InsightItem, tsMs: number) => void;
@@ -61,8 +62,22 @@ interface State {
 
 let db: Promise<Database> | null = null;
 let insightInterval: ReturnType<typeof setInterval> | null = null;
-// Tracks session-relative ms of last extracted insight to avoid re-processing.
-let lastInsightMs = 0;
+// Transcript chunks already sent for insight extraction (an index into the backend's list).
+let insightCursor = 0;
+let insightRun: Promise<void> = Promise.resolve(); // one extraction at a time, so the cursor never reads a chunk twice
+const pollInsights = () =>
+  (insightRun = insightRun.then(async () => {
+    const { sessionId, startedAt } = useStore.getState();
+    const nowMs = Date.now() - startedAt;
+    try {
+      const [items, next] = await invoke<[InsightItem[], number]>("extract_insights", { from: insightCursor });
+      if (useStore.getState().sessionId !== sessionId) return; // another meeting was opened while the model ran
+      insightCursor = next;
+      for (const item of items) useStore.getState().pushAutoNote(item, nowMs);
+    } catch (e) {
+      console.error("extract_insights failed:", e);
+    }
+  }));
 // Dedup set so repeated extractions don't push duplicate notes.
 const seenInsightTexts = new Set<string>();
 // Notes whose category the user typed (dec:/act:/risk:); the model must not re-bucket these.
@@ -88,7 +103,6 @@ export const useStore = create<State>((set, get) => ({
   sessionElapsedSeconds: 0,
   notes: [],
   transcript: [],
-  levels: { mic: 0, system: 0 },
   view: "notes",
   focusChunk: null,
   screen: "meetings",
@@ -97,10 +111,13 @@ export const useStore = create<State>((set, get) => ({
   setScreen: (screen) => set({ screen }),
   newMeeting: () => {
     if (get().running) return;
-    set({ screen: "session", sessionId: null, loaded: false, durationMs: 0, sessionElapsedSeconds: 0, notes: [], transcript: [], summary: "", view: "notes" });
+    set({ screen: "session", sessionId: null, loaded: false, durationMs: 0, sessionElapsedSeconds: 0, notes: [], transcript: [], summary: "", summaryStale: false, view: "notes" });
   },
   summary: "",
   summarizing: false,
+  summaryStale: false,
+  modelMsg: null,
+  modelsReady: false,
   setView: (view) => set({ view }),
 
   tickTimer: () => {
@@ -137,7 +154,7 @@ export const useStore = create<State>((set, get) => ({
       if (db && !resume && sessionId !== null) await db.execute("DELETE FROM sessions WHERE id=?", [sessionId]).catch(() => {});
       throw e;
     }
-    lastInsightMs = offset;
+    insightCursor = resume ? get().transcript.length : 0; // a resumed session seeds the backend with the earlier transcript
     seenInsightTexts.clear();
     if (resume) prevNotes.forEach((n) => seenInsightTexts.add(`${n.kind}:${(n.expanded ?? n.raw).toLowerCase().trim()}`));
     set({
@@ -149,20 +166,7 @@ export const useStore = create<State>((set, get) => ({
       ...(resume ? {} : { notes: [], transcript: [], summary: "" }),
     });
     // Poll for insights every 30s
-    insightInterval = setInterval(async () => {
-      const { running, startedAt: t0 } = get();
-      if (!running) return;
-      const nowMs = Date.now() - t0;
-      try {
-        const items = await invoke<InsightItem[]>("extract_insights", { sinceMs: lastInsightMs });
-        lastInsightMs = Math.max(0, nowMs - 5000); // leave 5s overlap for in-flight chunks
-        for (const item of items) {
-          get().pushAutoNote(item, nowMs);
-        }
-      } catch (e) {
-        console.error("extract_insights failed:", e);
-      }
-    }, 30_000);
+    insightInterval = setInterval(() => { if (get().running) pollInsights(); }, 30_000);
   },
 
   async stop() {
@@ -171,6 +175,7 @@ export const useStore = create<State>((set, get) => ({
     const { sessionId, startedAt } = get();
     set({ running: false, durationMs: Date.now() - startedAt });
     if (sessionId) persist((d) => d.execute("UPDATE sessions SET ended_at=? WHERE id=?", [Date.now(), sessionId]));
+    pollInsights(); // the tail since the last poll, where the action items usually are
   },
 
   async summarize() {
@@ -182,7 +187,8 @@ export const useStore = create<State>((set, get) => ({
         .sort((a, b) => a.ts - b.ts)
         .map((c) => ({ start: c.start ?? c.ts / 1000, end: c.end ?? c.ts / 1000, speaker: c.speaker, text: c.text }));
       const summary = await invoke<string>("summarize_transcript", { chunks });
-      set({ summary, view: "summary" });
+      // the user may have opened another meeting during a slow summary: save it, but don't show it there
+      if (get().sessionId === sessionId) set({ summary, summaryStale: false, view: "summary" });
       if (sessionId) persist((d) => d.execute("UPDATE sessions SET summary=? WHERE id=?", [summary, sessionId]));
     } finally {
       set({ summarizing: false });
@@ -195,11 +201,12 @@ export const useStore = create<State>((set, get) => ({
 
     let ts = explicitTs;
     if (ts === undefined) {
-      if (transcript.length > 0) {
+      if (running && startedAt > 0) {
+        // the clock, not the last chunk: after a silence the last chunk can be minutes old
+        ts = Math.max(0, Date.now() - startedAt);
+      } else if (transcript.length > 0) {
         // chunk ids are random, so never trust array order for "latest"
         ts = Math.max(...transcript.map((c) => (c.end !== undefined ? c.end * 1000 : c.ts)));
-      } else if (running && startedAt > 0) {
-        ts = Math.max(0, Date.now() - startedAt);
       } else if (sessionElapsedSeconds > 0) {
         ts = sessionElapsedSeconds * 1000;
       } else {
@@ -228,9 +235,7 @@ export const useStore = create<State>((set, get) => ({
       ),
     );
 
-    invoke<NoteExpandedPayload>("expand_note", {
-      id: note.id,
-      kind: note.kind,
+    invoke<Omit<NoteExpandedPayload, "id">>("expand_note", {
       text: note.raw,
       tsMs: ts,
       // reviewing a stored meeting: Rust holds no transcript, so send it (ignored while recording)
@@ -271,7 +276,6 @@ export const useStore = create<State>((set, get) => ({
               expanded: editedNotes.has(n.id) ? n.expanded : e.enhanced_text || n.raw,
               citation: e.citation_quote
                 ? {
-                    chunkIds: [],
                     quote: e.citation_quote,
                     start: e.citation_start,
                     end: e.citation_end,
@@ -284,8 +288,8 @@ export const useStore = create<State>((set, get) => ({
 
     persist((d) =>
       d.execute(
-        "UPDATE notes SET expanded=COALESCE(?, expanded), citation_quote=?, citation_start=?, citation_chunks=?, kind=COALESCE(?, kind), owner=COALESCE(owner, ?), due=COALESCE(due, ?) WHERE id=?",
-        [editedNotes.has(e.id) ? null : e.enhanced_text, e.citation_quote ?? null, e.citation_start ?? null, "[]", typedKinds.has(e.id) ? null : e.category ?? null, e.owner ?? null, e.due ?? null, e.id],
+        "UPDATE notes SET expanded=COALESCE(?, expanded), citation_quote=?, citation_start=?, kind=COALESCE(?, kind), owner=COALESCE(owner, ?), due=COALESCE(due, ?) WHERE id=?",
+        [editedNotes.has(e.id) ? null : e.enhanced_text, e.citation_quote ?? null, e.citation_start ?? null, typedKinds.has(e.id) ? null : e.category ?? null, e.owner ?? null, e.due ?? null, e.id],
       ),
     );
   },
@@ -313,7 +317,6 @@ export const useStore = create<State>((set, get) => ({
     const key = `${item.kind}:${item.text.toLowerCase().trim()}`;
     if (seenInsightTexts.has(key)) return;
     seenInsightTexts.add(key);
-    const { sessionId } = get();
     const note: Note = {
       id: crypto.randomUUID(),
       kind: item.kind as Note["kind"],
@@ -371,10 +374,11 @@ export const useStore = create<State>((set, get) => ({
       sessionElapsedSeconds: Math.floor(durationMs / 1000),
       sessionId: id,
       summary: sum[0]?.summary ?? "",
+      summaryStale: false,
       notes: rows.map((r) => ({
         id: r.id, kind: r.kind, raw: r.raw, ts: r.ts_ms, status: "completed", expanded: r.expanded ?? undefined,
         owner: r.owner ?? undefined, due: r.due ?? undefined, done: !!r.done, auto: !!r.auto,
-        citation: r.citation_quote ? { chunkIds: [], quote: r.citation_quote, start: r.citation_start ?? undefined } : undefined,
+        citation: r.citation_quote ? { quote: r.citation_quote, start: r.citation_start ?? undefined } : undefined,
       })),
       transcript: chunks.map((r) => ({ id: r.chunk_id, speaker: r.speaker, text: r.text, ts: r.ts_ms, excluded: !!r.excluded })),
     });
@@ -412,13 +416,12 @@ export const useStore = create<State>((set, get) => ({
     return path;
   },
 
-  setLevels: (levels) => set({ levels }),
   inspect: (focusChunk) => set({ focusChunk }),
   toggleExcluded(chunkId) {
     const c = get().transcript.find((x) => x.id === chunkId);
     if (!c) return;
     const excluded = !c.excluded;
-    set((s) => ({ transcript: s.transcript.map((x) => (x.id === chunkId ? { ...x, excluded } : x)) }));
+    set((s) => ({ summaryStale: !!s.summary, transcript: s.transcript.map((x) => (x.id === chunkId ? { ...x, excluded } : x)) }));
     const { sessionId } = get();
     persist((d) => d.execute("UPDATE transcript SET excluded=? WHERE session_id=? AND chunk_id=?", [excluded ? 1 : 0, sessionId, chunkId]));
   },
