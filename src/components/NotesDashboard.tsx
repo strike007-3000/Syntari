@@ -105,12 +105,16 @@ export const toMarkdown = (notes: Note[], summary = "") =>
 function useSummarizeStatus(active: boolean) {
   const [secs, setSecs] = useState(0);
   const [part, setPart] = useState<{ part: number; total: number } | null>(null);
+  // listener lives for the component's lifetime so it is registered before summarize() invokes the backend
+  useEffect(() => {
+    const sub = listen<{ part: number; total: number }>("summarize-progress", (e) => setPart(e.payload));
+    return () => { sub.then((off) => off()); };
+  }, []);
   useEffect(() => {
     if (!active) return;
     setSecs(0); setPart(null);
     const t = setInterval(() => setSecs((s) => s + 1), 1000);
-    const sub = listen<{ part: number; total: number }>("summarize-progress", (e) => setPart(e.payload));
-    return () => { clearInterval(t); sub.then((off) => off()); };
+    return () => clearInterval(t);
   }, [active]);
   return active ? `${part && part.total > 1 ? `part ${part.part}/${part.total}, ` : ""}${secs}s` : "";
 }

@@ -4,7 +4,7 @@ import { useStore } from "../store";
 import { fmtClock } from "../types";
 
 export default function TranscriptDrawer() {
-  const { transcript: raw, focusChunk, toggleExcluded, running } = useStore();
+  const { transcript: raw, focusChunk, toggleExcluded, running, summarizing } = useStore();
   const transcript = useMemo(() => [...raw].sort((a, b) => a.ts - b.ts), [raw]); // mic and system chunks arrive out of order
   const stick = useRef(true); // follow the live tail only while the user hasn't scrolled up
   const [open, setOpen] = useState(true);
@@ -34,7 +34,7 @@ export default function TranscriptDrawer() {
           <p key={c.id} id={`chunk-${c.id}`} className={`group rounded p-1 ${c.id === focusChunk ? "bg-accent/20" : ""} ${c.excluded ? "opacity-40 line-through" : ""}`}>
             <span className="font-mono text-xs text-slate-500">{fmtClock(c.ts)} </span>
             <b className={c.speaker === "You" ? "text-emerald-400" : "text-accent"}>[{c.speaker}]</b> {c.text}
-            {!running && (
+            {!running && !summarizing && (
               <button onClick={() => toggleExcluded(c.id)} title={c.excluded ? "Include in summary again" : "Exclude from summary (e.g. an ad)"} className="ml-1 text-xs text-slate-500 opacity-0 hover:text-slate-200 focus:opacity-100 group-hover:opacity-100">
                 {c.excluded ? "↩ include" : "✕ exclude"}
               </button>
