@@ -251,6 +251,11 @@ pub fn run() {
         description: "transcript_excluded",
         sql: include_str!("../migrations/005_transcript_excluded.sql"),
         kind: MigrationKind::Up,
+    }, Migration {
+        version: 6,
+        description: "summary_stale",
+        sql: include_str!("../migrations/006_summary_stale.sql"),
+        kind: MigrationKind::Up,
     }];
 
     // Plain on-device SQLite: the plugin's sqlx rejects a `?key=` URL param, so a keychain-keyed URL never opened.

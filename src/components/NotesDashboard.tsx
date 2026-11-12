@@ -89,8 +89,8 @@ function Item({ n }: { n: Note }) {
   );
 }
 
-export const toMarkdown = (notes: Note[], summary = "") =>
-  [summary && `## Summary\n${summary}`, ...SECTIONS.map(({ kind, title }) => {
+export const toMarkdown = (notes: Note[], summary = "", stale = false) =>
+  [summary && `## Summary${stale ? " (out of date: excluded transcript lines changed, regenerate)" : ""}\n${summary}`, ...SECTIONS.map(({ kind, title }) => {
     const items = notes.filter((n) => n.kind === kind && n.status !== "suggested");
     if (!items.length) return "";
     const lines = items.map((n) =>
@@ -169,7 +169,7 @@ export default function NotesDashboard() {
         )}
         {view === "markdown" && (
           <article className="space-y-2 text-sm [&_h2]:mt-3 [&_h2]:font-semibold [&_ul]:list-disc [&_ul]:pl-5">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{toMarkdown(notes, summary)}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{toMarkdown(notes, summary, summaryStale)}</ReactMarkdown>
           </article>
         )}
       </div>

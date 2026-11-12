@@ -1,0 +1,1 @@
+ALTER TABLE sessions ADD COLUMN summary_stale INTEGER NOT NULL DEFAULT 0;

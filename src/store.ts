@@ -65,9 +65,11 @@ let insightInterval: ReturnType<typeof setInterval> | null = null;
 // Transcript chunks already sent for insight extraction (an index into the backend's list).
 let insightCursor = 0;
 let insightRun: Promise<void> = Promise.resolve(); // one extraction at a time, so the cursor never reads a chunk twice
-const pollInsights = () =>
-  (insightRun = insightRun.then(async () => {
-    const { sessionId, startedAt } = useStore.getState();
+export const pollInsights = () => {
+  // bound to the meeting it was queued for: by the time it runs, another one may be open while the backend still holds this one's transcript
+  const { sessionId, startedAt } = useStore.getState();
+  return (insightRun = insightRun.then(async () => {
+    if (useStore.getState().sessionId !== sessionId) return;
     const nowMs = Date.now() - startedAt;
     try {
       const [items, next] = await invoke<[InsightItem[], number]>("extract_insights", { from: insightCursor });
@@ -78,6 +80,7 @@ const pollInsights = () =>
       console.error("extract_insights failed:", e);
     }
   }));
+};
 // Dedup set so repeated extractions don't push duplicate notes.
 const seenInsightTexts = new Set<string>();
 // Notes whose category the user typed (dec:/act:/risk:); the model must not re-bucket these.
@@ -189,7 +192,7 @@ export const useStore = create<State>((set, get) => ({
       const summary = await invoke<string>("summarize_transcript", { chunks });
       // the user may have opened another meeting during a slow summary: save it, but don't show it there
       if (get().sessionId === sessionId) set({ summary, summaryStale: false, view: "summary" });
-      if (sessionId) persist((d) => d.execute("UPDATE sessions SET summary=? WHERE id=?", [summary, sessionId]));
+      if (sessionId) persist((d) => d.execute("UPDATE sessions SET summary=?, summary_stale=0 WHERE id=?", [summary, sessionId]));
     } finally {
       set({ summarizing: false });
     }
@@ -365,7 +368,7 @@ export const useStore = create<State>((set, get) => ({
     const d = await getDb();
     const rows = await d.select<any[]>("SELECT * FROM notes WHERE session_id=? ORDER BY ts_ms", [id]);
     const chunks = await d.select<any[]>("SELECT * FROM transcript WHERE session_id=? ORDER BY ts_ms, rowid", [id]);
-    const sum = await d.select<{ summary: string | null }[]>("SELECT summary FROM sessions WHERE id=?", [id]);
+    const sum = await d.select<{ summary: string | null; summary_stale: number }[]>("SELECT summary, summary_stale FROM sessions WHERE id=?", [id]);
     const durationMs = Math.max(0, ...chunks.map((r) => r.ts_ms), ...rows.map((r) => r.ts_ms));
     set({
       screen: "session",
@@ -374,7 +377,7 @@ export const useStore = create<State>((set, get) => ({
       sessionElapsedSeconds: Math.floor(durationMs / 1000),
       sessionId: id,
       summary: sum[0]?.summary ?? "",
-      summaryStale: false,
+      summaryStale: !!sum[0]?.summary_stale,
       notes: rows.map((r) => ({
         id: r.id, kind: r.kind, raw: r.raw, ts: r.ts_ms, status: "completed", expanded: r.expanded ?? undefined,
         owner: r.owner ?? undefined, due: r.due ?? undefined, done: !!r.done, auto: !!r.auto,
@@ -422,7 +425,8 @@ export const useStore = create<State>((set, get) => ({
     if (!c) return;
     const excluded = !c.excluded;
     set((s) => ({ summaryStale: !!s.summary, transcript: s.transcript.map((x) => (x.id === chunkId ? { ...x, excluded } : x)) }));
-    const { sessionId } = get();
+    const { sessionId, summary } = get();
     persist((d) => d.execute("UPDATE transcript SET excluded=? WHERE session_id=? AND chunk_id=?", [excluded ? 1 : 0, sessionId, chunkId]));
+    if (summary) persist((d) => d.execute("UPDATE sessions SET summary_stale=1 WHERE id=?", [sessionId]));
   },
 }));

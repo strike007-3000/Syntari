@@ -33,7 +33,7 @@ function Meters() {
 }
 
 export default function Header() {
-  const { running, sessionElapsedSeconds, modelMsg, modelsReady, start, stop, tickTimer, setScreen, loaded, notes, summary, dbError, dismissDbError, backup } = useStore();
+  const { running, sessionElapsedSeconds, modelMsg, modelsReady, start, stop, tickTimer, setScreen, loaded, notes, summary, summaryStale, dbError, dismissDbError, backup } = useStore();
   const [version, setVersion] = useState("");
   useEffect(() => { getVersion().then(setVersion).catch(() => {}); }, []);
   const [hasSystemAudio, setHasSystemAudio] = useState<boolean | null>(null);
@@ -102,13 +102,13 @@ export default function Header() {
               ← Meetings
             </button>
             <button
-              onClick={() => navigator.clipboard.writeText(toMarkdown(notes, summary))}
+              onClick={() => navigator.clipboard.writeText(toMarkdown(notes, summary, summaryStale))}
               className="rounded-md border border-ink-700 bg-ink-800 px-2.5 py-1 text-xs text-slate-300 transition-colors hover:text-white"
             >
               Copy Markdown
             </button>
             <button
-              onClick={() => invoke("export_markdown", { content: toMarkdown(notes, summary) }).catch((e) => alert(String(e)))}
+              onClick={() => invoke("export_markdown", { content: toMarkdown(notes, summary, summaryStale) }).catch((e) => alert(String(e)))}
               className="rounded-md border border-ink-700 bg-ink-800 px-2.5 py-1 text-xs text-slate-300 transition-colors hover:text-white"
               title="Save to your Downloads folder"
             >
