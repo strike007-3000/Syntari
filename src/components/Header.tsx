@@ -34,7 +34,7 @@ function Meters() {
 }
 
 export default function Header() {
-  const { running, sessionElapsedSeconds, modelMsg, modelsReady, start, stop, tickTimer, setScreen, loaded, notes, summary, summaryStale, transcript, dbError, dismissDbError, backup } = useStore();
+  const { running, paused, pause, resume, sessionElapsedSeconds, modelMsg, modelsReady, start, stop, tickTimer, setScreen, loaded, notes, summary, summaryStale, transcript, dbError, dismissDbError, backup } = useStore();
   const [version, setVersion] = useState("");
   useEffect(() => { getVersion().then(setVersion).catch(() => {}); }, []);
   const [hasSystemAudio, setHasSystemAudio] = useState<boolean | null>(null);
@@ -135,6 +135,11 @@ export default function Header() {
         <span className="font-mono text-sm font-semibold tracking-wider text-slate-200">
           [{fmtClock(sessionElapsedSeconds * 1000)}]
         </span>
+        {running && (
+          <button onClick={() => (paused ? resume() : pause()).catch((e) => alert(String(e)))} className="rounded-md border border-ink-700 bg-ink-800 px-3 py-1.5 text-sm text-slate-200 hover:text-white">
+            {paused ? "Resume" : "Pause"}
+          </button>
+        )}
         <button
           onClick={() => (running ? stop() : start()).catch((e) => {
             const msg = String(e);

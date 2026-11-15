@@ -26,6 +26,18 @@ fn size_of(dir: &Path, f: &str) -> u64 {
     std::fs::metadata(dir.join(f)).map(|m| m.len()).unwrap_or(0)
 }
 
+/// Saved recordings under the app data folder: (meeting id, bytes, seconds of audio, days since last written).
+pub fn list(app_data: &Path) -> Vec<(i64, u64, u64, u64)> {
+    let now = std::time::SystemTime::now();
+    std::fs::read_dir(app_data.join("recordings")).into_iter().flatten().flatten().filter_map(|e| {
+        let id = e.file_name().to_string_lossy().parse::<i64>().ok()?;
+        let d = e.path();
+        let age = ["me.pcm", "them.pcm"].iter().filter_map(|f| std::fs::metadata(d.join(f)).and_then(|m| m.modified()).ok())
+            .max().and_then(|t| now.duration_since(t).ok()).map_or(0, |a| a.as_secs() / 86_400);
+        Some((id, size(&d), end_samples(&d) as u64 / RATE as u64, age))
+    }).collect()
+}
+
 pub struct Recorder {
     me: File,
     them: File,

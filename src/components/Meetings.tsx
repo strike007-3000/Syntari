@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useStore, MeetingRow } from "../store";
 
 const dayLabel = (ms: number) => {
@@ -16,7 +17,15 @@ export default function Meetings() {
   const afterSave = (act: () => unknown) => void saving.current.then((ok) => ok && act());
   const [q, setQ] = useState("");
   const [rows, setRows] = useState<MeetingRow[]>([]);
-  const refresh = () => listSessions(q).then(setRows).catch(() => setRows([]));
+  // saved audio by meeting: bytes, seconds of audio, days since last written
+  const [recs, setRecs] = useState<Record<number, [number, number, number]>>({});
+  const refresh = () => {
+    listSessions(q).then(setRows).catch(() => setRows([]));
+    invoke<[number, number, number, number][]>("list_recordings").then((l) => setRecs(Object.fromEntries(l.map(([id, b, s, a]) => [id, [b, s, a]])))).catch(() => setRecs({}));
+  };
+  const totalMb = Object.values(recs).reduce((n, r) => n + r[0], 0) / 1e6;
+  const mb = (id: number) => `${(recs[id][0] / 1e6).toFixed(0)} MB`;
+  const interrupted = (r: MeetingRow) => !!recs[r.id] && r.ended_at === null && recs[r.id][1] - (r.last_ts ?? 0) / 1000 > 30;
   useEffect(() => { refresh(); }, [q, listSessions]);
   const remove = (id: number) => {
     if (confirm("Delete this meeting, its notes and its transcript? This cannot be undone."))
@@ -33,6 +42,15 @@ export default function Meetings() {
         {modelMsg && <span className="rounded-full border border-amber-500/30 bg-amber-500/15 px-2.5 py-0.5 text-xs text-amber-400">{modelMsg}</span>}
         <button onClick={() => afterSave(newMeeting)} disabled={running} className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-ink-950 disabled:opacity-50">New meeting</button>
       </div>
+      {totalMb > 0 && (
+        <div className="mb-3 flex items-center gap-3 text-xs text-slate-400">
+          Saved audio: {totalMb.toFixed(0)} MB
+          <button
+            className="rounded-md border border-ink-700 px-2 py-0.5 hover:text-white"
+            onClick={() => confirm("Delete saved audio not written to for 30 days? Transcripts and notes stay.") && invoke<number>("delete_old_recordings", { days: 30 }).then((b) => { alert(`Freed ${(b / 1e6).toFixed(0)} MB`); refresh(); }).catch((e) => alert(String(e)))}
+          >Delete audio older than 30 days</button>
+        </div>
+      )}
       <input
         value={q}
         onChange={(e) => setQ(e.target.value)}
@@ -66,6 +84,15 @@ export default function Meetings() {
                     <span className="line-clamp-2 text-sm">{r.title || r.summary?.replace(/[#*\-]/g, "").trim() || r.first_note || "No summary yet"}</span>
                   </button>
                 )}
+                {interrupted(r) && (
+                  <button
+                    disabled={running}
+                    onClick={() => confirm("This meeting's recording runs past its transcript (it was probably interrupted). Rebuild the transcript from the saved audio?") && open(r.id).then(() => useStore.getState().retranscribe()).then(refresh).catch((e) => alert(`Re-transcribe failed: ${e}`))}
+                    className="rounded-md bg-amber-500/15 px-2 py-1 text-xs text-amber-400 disabled:opacity-50"
+                    title="Recording found from an interrupted meeting"
+                  >Recover from audio</button>
+                )}
+                {recs[r.id] && <span className="text-xs text-slate-500" title="Saved audio">♪ {mb(r.id)}</span>}
                 <button onClick={() => setRenaming(r.id)} className="rounded-md border border-ink-700 px-3 py-1 text-xs hover:text-white">Rename</button>
                 <button onClick={() => afterSave(() => open(r.id))} className="rounded-md border border-ink-700 px-3 py-1 text-xs hover:text-white">Open</button>
                 <button
