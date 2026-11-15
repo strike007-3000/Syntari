@@ -422,12 +422,18 @@ export const useStore = create<State>((set, get) => ({
     if (sessionId === null || running) return;
     const chunks = await invoke<{ start: number; end: number; speaker: "You" | "Remote"; text: string }[]>("retranscribe", { sessionId });
     if (get().sessionId !== sessionId) return; // another meeting was opened while it ran
-    const transcript = chunks.map((c, i) => ({ id: i + 1, speaker: c.speaker, text: c.text, ts: Math.round(c.start * 1000), start: c.start, end: c.end }));
-    set({ transcript, summaryStale: !!summary });
+    // new rows get negative ids (live ids are positive), so the old transcript is replaced by one delete after every insert succeeded
+    const transcript = chunks.map((c, i) => ({ id: -(i + 1), speaker: c.speaker, text: c.text, ts: Math.round(c.start * 1000), start: c.start, end: c.end }));
     const d = await getDb();
-    await d.execute("DELETE FROM transcript WHERE session_id=?", [sessionId]);
-    for (const c of transcript) await d.execute("INSERT INTO transcript (session_id, chunk_id, speaker, text, ts_ms) VALUES (?,?,?,?,?)", [sessionId, c.id, c.speaker, c.text, c.ts]);
-    if (summary) await d.execute("UPDATE sessions SET summary_stale=1 WHERE id=?", [sessionId]);
+    try {
+      for (const c of transcript) await d.execute("INSERT INTO transcript (session_id, chunk_id, speaker, text, ts_ms) VALUES (?,?,?,?,?)", [sessionId, c.id, c.speaker, c.text, c.ts]);
+      await d.execute("DELETE FROM transcript WHERE session_id=? AND chunk_id>0", [sessionId]);
+    } catch (e) {
+      await d.execute("DELETE FROM transcript WHERE session_id=? AND chunk_id<0", [sessionId]).catch(() => {});
+      throw e;
+    }
+    if (summary) await d.execute("UPDATE sessions SET summary_stale=1 WHERE id=?", [sessionId]).catch(() => {});
+    if (get().sessionId === sessionId) set({ transcript, summaryStale: !!summary });
   },
 
   async backup() {

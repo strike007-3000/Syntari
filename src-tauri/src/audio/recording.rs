@@ -17,6 +17,15 @@ pub fn size(dir: &Path) -> u64 {
     ["me.pcm", "them.pcm"].iter().filter_map(|f| std::fs::metadata(dir.join(f)).ok()).map(|m| m.len()).sum()
 }
 
+/// Samples already saved (the longer track).
+pub fn end_samples(dir: &Path) -> usize {
+    (size_of(dir, "me.pcm").max(size_of(dir, "them.pcm")) / 2) as usize
+}
+
+fn size_of(dir: &Path, f: &str) -> u64 {
+    std::fs::metadata(dir.join(f)).map(|m| m.len()).unwrap_or(0)
+}
+
 pub struct Recorder {
     me: File,
     them: File,
