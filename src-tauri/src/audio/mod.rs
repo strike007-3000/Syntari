@@ -1,5 +1,6 @@
 mod dsp;
 mod echo;
+mod pause;
 pub mod recording;
 #[cfg(target_os = "macos")]
 pub mod macos_sc_tap;
@@ -212,7 +213,7 @@ pub fn start(
         let mut aec = dsp::Aec::new();
         let mut leak = echo::Leak::default();
         let began = Instant::now();
-        let (mut paused_total, mut last_tick, mut was_paused) = (Duration::ZERO, Instant::now(), false);
+        let (mut pause, mut last_tick) = (pause::Pause::default(), Instant::now());
         // Samples drained per track so far: a sample clock keeps chunk times monotonic even when transcription lags.
         let (mut sys_done, mut mic_done) = (0usize, 0usize);
         let mut last = Instant::now();
@@ -226,21 +227,21 @@ pub fn start(
 
         loop {
             let stopping = stop2.load(Ordering::Relaxed);
-            let paused = cap.paused.load(Ordering::Relaxed);
             let tick = last_tick.elapsed();
             last_tick = Instant::now();
-            if paused && was_paused && !stopping {
-                // paused: nothing is kept, and the time does not count towards the meeting's clock
-                cap.sys.lock().unwrap().clear();
-                cap.mic.lock().unwrap().clear();
-                cap.sys_dropped.store(0, Ordering::Relaxed);
-                cap.mic_dropped.store(0, Ordering::Relaxed);
-                paused_total += tick;
-                std::thread::sleep(Duration::from_millis(100));
-                continue;
-            }
-            let flush = paused && !was_paused; // pause just pressed: drain everything once
-            was_paused = paused;
+            let flush = match pause.step(cap.paused.load(Ordering::Relaxed), stopping, tick) {
+                pause::Step::Skip => {
+                    // paused: nothing is kept
+                    cap.sys.lock().unwrap().clear();
+                    cap.mic.lock().unwrap().clear();
+                    cap.sys_dropped.store(0, Ordering::Relaxed);
+                    cap.mic_dropped.store(0, Ordering::Relaxed);
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+                pause::Step::Flush => true,
+                pause::Step::Run => false,
+            };
             let drain_all = stopping || flush;
             if mic_polled.elapsed() >= Duration::from_millis(500) {
                 mic_polled = Instant::now();
@@ -261,7 +262,7 @@ pub fn start(
             {
                 let mut b = cap.sys.lock().unwrap();
                 let produced = sys_done + b.len() + cap.sys_dropped.load(Ordering::Relaxed);
-                let pad = dsp::gap_pad(produced, (began.elapsed().saturating_sub(paused_total).as_secs_f64() * 16_000.0) as usize);
+                let pad = dsp::gap_pad(produced, (pause.active(began.elapsed()).as_secs_f64() * 16_000.0) as usize);
                 b.extend(std::iter::repeat(0.0).take(pad));
             }
             let has_window_samples = cap.sys.lock().unwrap().len() >= 16_000 * WINDOW_SECS as usize || cap.mic.lock().unwrap().len() >= 16_000 * WINDOW_SECS as usize;

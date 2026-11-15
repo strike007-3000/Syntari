@@ -27,7 +27,7 @@ cd src-tauri && cargo check && cargo test
 
 ## Guidelines
 
-- **Privacy is the product.** Do not add network calls, telemetry, analytics or crash reporting. Do not loosen the CSP or Tauri capabilities without explaining why in the PR.
+- **Privacy is the product.** Do not add network calls, telemetry, analytics or crash reporting. Do not loosen the CSP or Tauri capabilities without explaining why in the PR. Anything that writes audio or transcripts to disk must be opt-in, local, owner-only where the OS allows, deletable from the UI, and described in the README's Security section.
 - **Both platforms.** Audio code is platform-specific (`src-tauri/src/audio/`). Say which OS you tested on; if you could only test one, say so and keep the other compiling.
 - **Database changes** need a new numbered file in `src-tauri/migrations/` and registration in `lib.rs`. Never edit an existing migration.
 - **Keep it small.** One change per PR, with a test where there is logic (Vitest for `src/`, `cargo test` for `src-tauri/`).
