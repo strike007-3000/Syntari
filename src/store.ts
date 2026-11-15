@@ -1,7 +1,8 @@
+import { ftsQuery, Source } from "./ask";
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import Database from "@tauri-apps/plugin-sql";
-import { Note, NoteExpandedPayload, TranscriptChunk, parseShorthand } from "./types";
+import { Note, NoteExpandedPayload, TranscriptChunk, parseShorthand, fmtClock } from "./types";
 
 export type View = "notes" | "summary" | "markdown";
 
@@ -63,6 +64,8 @@ interface State {
   resume: () => Promise<void>;
   backup: () => Promise<string>;
   retranscribe: () => Promise<void>;
+  ask: (question: string) => Promise<{ answer: string; sources: Source[] }>;
+  openSource: (s: Source) => Promise<void>;
 }
 
 /** Crash-safe recording is opt-in: raw audio is written to the app data folder while a meeting runs. */
@@ -470,6 +473,26 @@ export const useStore = create<State>((set, get) => ({
     }
     if (summary) await d.execute("UPDATE sessions SET summary_stale=1 WHERE id=?", [sessionId]).catch(() => {});
     if (get().sessionId === sessionId) set({ transcript, summaryStale: !!summary });
+  },
+
+  async ask(question) {
+    const match = ftsQuery(question);
+    if (!match) return { answer: "Ask about something specific, like a person, a decision or a date.", sources: [] };
+    const d = await getDb();
+    const from = (kind: "t" | "n") => kind === "t"
+      ? `SELECT s.id AS sid, x.chunk_id AS cid, s.title, s.started_at, x.ts_ms AS ts, x.speaker, x.text AS text FROM fts_transcript f JOIN transcript x ON x.rowid = f.rowid JOIN sessions s ON s.id = x.session_id WHERE fts_transcript MATCH ?1 ORDER BY f.rank LIMIT 6`
+      : `SELECT s.id AS sid, NULL AS cid, s.title, s.started_at, x.ts_ms AS ts, NULL AS speaker, COALESCE(x.expanded, x.raw) AS text FROM fts_notes f JOIN notes x ON x.rowid = f.rowid JOIN sessions s ON s.id = x.session_id WHERE fts_notes MATCH ?1 ORDER BY f.rank LIMIT 3`;
+    const rows = [...(await d.select<any[]>(from("t"), [match])), ...(await d.select<any[]>(from("n"), [match]))];
+    const sources: Source[] = rows.map((r, i) => ({ n: i + 1, sessionId: r.sid, chunkId: r.cid ?? undefined, title: r.title ?? "", startedAt: r.started_at, ts: r.ts, speaker: r.speaker ?? undefined, text: String(r.text).slice(0, 500) }));
+    if (!sources.length) return { answer: "I found nothing about that in your meetings.", sources };
+    const when = (s: Source) => `${s.title || new Date(s.startedAt).toLocaleDateString()} at ${fmtClock(s.ts)}${s.speaker ? `, ${s.speaker}` : ""}`;
+    const answer = await invoke<string>("ask_meetings", { question, passages: sources.map((s) => [s.n, `(${when(s)}) ${s.text}`]) });
+    return { answer, sources };
+  },
+
+  async openSource(s) {
+    await get().loadSession(s.sessionId);
+    if (s.chunkId !== undefined) set({ focusChunk: s.chunkId });
   },
 
   async backup() {

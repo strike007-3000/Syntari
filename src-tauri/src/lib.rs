@@ -292,6 +292,14 @@ async fn summarize_transcript(app: AppHandle, chunks: Vec<ai::engine::Transcript
     engine.summarize(&chunks, |i, n| { let _ = app.emit("summarize-progress", serde_json::json!({ "part": i, "total": n })); }).await
 }
 
+/// Answer from passages the frontend retrieved; each is (number, "meeting, time: text").
+#[tauri::command]
+async fn ask_meetings(app: AppHandle, question: String, passages: Vec<(usize, String)>) -> Result<String, String> {
+    let st = app.state::<AppState>();
+    let engine = st.ai_engine.read().await;
+    engine.answer(&question, &passages).await
+}
+
 pub fn run() {
     let migrations = vec![Migration {
         version: 1,
@@ -322,6 +330,11 @@ pub fn run() {
         version: 6,
         description: "summary_stale",
         sql: include_str!("../migrations/006_summary_stale.sql"),
+        kind: MigrationKind::Up,
+    }, Migration {
+        version: 7,
+        description: "search_index",
+        sql: include_str!("../migrations/007_search_index.sql"),
         kind: MigrationKind::Up,
     }];
 
@@ -387,7 +400,8 @@ pub fn run() {
             reveal_path,
             open_logs,
             extract_insights,
-            summarize_transcript
+            summarize_transcript,
+            ask_meetings
         ])
         .build(tauri::generate_context!())
         .expect("error while building Syntari application")
