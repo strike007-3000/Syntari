@@ -33,7 +33,7 @@ fn models_ready(st: State<'_, AppState>) -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn start_syntari_session(app: AppHandle, st: State<'_, AppState>, offset_ms: u64, prior: Vec<ai::engine::TranscriptChunk>, record_session: Option<i64>) -> Result<(), String> {
+fn start_syntari_session(app: AppHandle, st: State<'_, AppState>, offset_ms: u64, prior: Vec<ai::engine::TranscriptChunk>, record_session: Option<i64>) -> Result<u64, String> {
     if !models_loaded(&st) {
         return Err("AI models are still loading".into());
     }
@@ -47,10 +47,12 @@ fn start_syntari_session(app: AppHandle, st: State<'_, AppState>, offset_ms: u64
         Some(id) => Some(audio::recording::dir(&app.path().app_data_dir().map_err(|e| e.to_string())?, id)),
         None => None,
     };
+    // saved audio is the timeline: a continued meeting starts where it ends, so notes, transcript and re-transcribed lines share one clock
+    let offset_ms = offset_ms.max(rec_dir.as_deref().map_or(0, |d| audio::recording::end_samples(d) as u64 / 16));
     let t0 = Instant::now();
     let sess = audio::start(app, st.cap.clone(), st.tr.clone(), st.ai_engine.clone(), offset_ms as f64 / 1000.0, rec_dir)?;
     *s = Some((sess, t0));
-    Ok(())
+    Ok(offset_ms)
 }
 
 fn downloads_file(name: &str) -> Result<PathBuf, String> {

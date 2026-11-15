@@ -193,8 +193,8 @@ pub fn start(
         let mut mic_name = host.default_input_device().and_then(|d| d.name().ok());
         let mut changed: Option<(Option<String>, Instant)> = None;
         let mut mic_polled = Instant::now();
-        // a continued meeting appends after the saved audio, never over it (its notes' last timestamp can be earlier than the audio's end)
-        let rec_base = ((offset_secs * 16_000.0) as usize).max(rec_dir.as_deref().map_or(0, recording::end_samples));
+        // the caller already moved a continued meeting's offset to the end of the saved audio
+        let rec_base = (offset_secs * 16_000.0) as usize;
         let mut rec = rec_dir.and_then(|d| recording::Recorder::open(&d).map_err(|e| eprintln!("[Recording] cannot open {}: {e}", d.display())).ok());
         let mut aec = dsp::Aec::new();
         let mut leak = echo::Leak::default();

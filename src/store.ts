@@ -138,8 +138,8 @@ export const useStore = create<State>((set, get) => ({
     // A loaded past session is continued in place; otherwise a new one is created.
     const { loaded, sessionId: prevId, durationMs, notes: prevNotes } = get();
     const resume = loaded && prevId !== null;
-    const offset = resume ? durationMs : 0;
-    const startedAt = Date.now() - offset;
+    let offset = resume ? durationMs : 0;
+    let startedAt = Date.now() - offset;
     // Create the DB session first so no note/chunk can be saved with a null sessionId
     // Best-effort: capture must still work when the keychain/SQL plugin is unavailable (sessionId stays null)
     let db: Database | null = null;
@@ -156,7 +156,9 @@ export const useStore = create<State>((set, get) => ({
     try {
       // chunks carry only their start time; reuse it as both bounds for the lookback window
       const prior = resume ? get().transcript.map((c) => ({ start: c.ts / 1000, end: c.ts / 1000, speaker: c.speaker, text: c.text })) : [];
-      await invoke("start_syntari_session", { offsetMs: offset, prior, recordSession: localStorage.getItem(RECORD_KEY) === "1" ? sessionId : null });
+      // the backend may move the start later, to the end of the saved audio
+      offset = await invoke<number>("start_syntari_session", { offsetMs: offset, prior, recordSession: localStorage.getItem(RECORD_KEY) === "1" ? sessionId : null });
+      startedAt = Date.now() - offset;
     } catch (e) {
       if (db && !resume && sessionId !== null) await db.execute("DELETE FROM sessions WHERE id=?", [sessionId]).catch(() => {});
       throw e;
