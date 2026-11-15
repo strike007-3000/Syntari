@@ -421,7 +421,7 @@ export const useStore = create<State>((set, get) => ({
 
   async deleteSession(id) {
     const d = await getDb();
-    await invoke("delete_recording", { sessionId: id }).catch(() => {});
+    await invoke("delete_recording", { sessionId: id }); // a recording that cannot be removed keeps its meeting, so no audio is orphaned
     await d.execute("DELETE FROM sessions WHERE id=?", [id]); // notes and transcript go with it via ON DELETE CASCADE, atomically
     if (get().sessionId === id) set({ sessionId: null, loaded: false, durationMs: 0, sessionElapsedSeconds: 0, notes: [], transcript: [], summary: "" });
   },
@@ -447,14 +447,18 @@ export const useStore = create<State>((set, get) => ({
     if (sessionId === null || running) return;
     const chunks = await invoke<{ start: number; end: number; speaker: "You" | "Remote"; text: string }[]>("retranscribe", { sessionId });
     if (get().sessionId !== sessionId) return; // another meeting was opened while it ran
-    // new rows get negative ids (live ids are positive), so the old transcript is replaced by one delete after every insert succeeded
-    const transcript = chunks.map((c, i) => ({ id: -(i + 1), speaker: c.speaker, text: c.text, ts: Math.round(c.start * 1000), start: c.start, end: c.end }));
+    if (!chunks.length) throw new Error("No speech found in the saved audio; the existing transcript was kept");
+    // New rows go below every existing id (live ids are positive, an earlier re-transcription used negatives), so they never
+    // collide; one delete then removes everything older, and a failed insert removes only the new rows.
     const d = await getDb();
+    const [{ lowest }] = await d.select<{ lowest: number }[]>("SELECT COALESCE(MIN(chunk_id), 0) AS lowest FROM transcript WHERE session_id=?", [sessionId]);
+    const floor = Math.min(0, lowest);
+    const transcript = chunks.map((c, i) => ({ id: floor - (i + 1), speaker: c.speaker, text: c.text, ts: Math.round(c.start * 1000), start: c.start, end: c.end }));
     try {
       for (const c of transcript) await d.execute("INSERT INTO transcript (session_id, chunk_id, speaker, text, ts_ms) VALUES (?,?,?,?,?)", [sessionId, c.id, c.speaker, c.text, c.ts]);
-      await d.execute("DELETE FROM transcript WHERE session_id=? AND chunk_id>0", [sessionId]);
+      await d.execute("DELETE FROM transcript WHERE session_id=? AND chunk_id>=?", [sessionId, floor]);
     } catch (e) {
-      await d.execute("DELETE FROM transcript WHERE session_id=? AND chunk_id<0", [sessionId]).catch(() => {});
+      await d.execute("DELETE FROM transcript WHERE session_id=? AND chunk_id<?", [sessionId, floor]).catch(() => {});
       throw e;
     }
     if (summary) await d.execute("UPDATE sessions SET summary_stale=1 WHERE id=?", [sessionId]).catch(() => {});

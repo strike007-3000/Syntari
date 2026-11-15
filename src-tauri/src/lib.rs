@@ -43,7 +43,7 @@ fn start_syntari_session(app: AppHandle, st: State<'_, AppState>, offset_ms: u64
     }
     // On Continue, seed the previous transcript so notes typed right away still get lookback context
     *st.tr.lock().unwrap() = prior;
-    st.cap.paused.store(false, std::sync::atomic::Ordering::Relaxed);
+    st.cap.pause.reset();
     let rec_dir = match record_session {
         Some(id) => Some(audio::recording::dir(&app.path().app_data_dir().map_err(|e| e.to_string())?, id)),
         None => None,
@@ -90,7 +90,7 @@ fn recording_size(app: AppHandle, session_id: i64) -> Result<u64, String> {
 
 #[tauri::command]
 fn set_paused(st: State<'_, AppState>, paused: bool) {
-    st.cap.paused.store(paused, std::sync::atomic::Ordering::Relaxed);
+    st.cap.pause.set(paused);
 }
 
 #[tauri::command]

@@ -151,7 +151,7 @@ syntari/
 │   │   │   ├── mod.rs                 # Audio pipeline coordinator & ring buffers; i16/u16/i32/f32 input conversion; bleed threshold
 │   │   │   ├── dsp.rs                 # Resampling, NLMS filter, frame ducking, silence-gap padding, loudness-envelope correlation (+ tests)
 │   │   │   ├── echo.rs                # Drops mic lines that copy the remote side, gated by audio leak evidence (+ tests)
-│   │   │   ├── pause.rs               # Pause state machine and paused-time accounting for the drain loop (+ tests)
+│   │   │   ├── pause.rs               # Pause flag and paused-time clock shared by the capture callbacks and the drain loop (+ tests)
 │   │   │   ├── recording.rs           # Opt-in PCM recording, listing, and re-transcription of saved audio (+ tests)
 │   │   │   ├── macos_sc_tap.rs        # Native ScreenCaptureKit loopback tap (macOS)
 │   │   │   ├── loopback_macos.rs      # Virtual-device fallback (macOS)
@@ -199,7 +199,7 @@ Models are not bundled or committed. On first launch Syntari downloads whisper-s
 * **Start / Stop** a session from the header (*Continue* on a reopened meeting); the left pad takes your notes, the middle panel structures them, the right drawer shows the live transcript. *← Meetings* returns to the list when no session is running.
 * **AI suggestions:** every 30 s the local model proposes decisions, actions, risks and discussion points from the transcript. They appear only in the Notes panel (amber) until you **Accept** or **Dismiss** them; an unaccepted suggestion is held in memory only (not saved, not exported).
 * **Summary:** after stopping, open the *Summary* tab and click *Generate summary* (or *Regenerate*). Long transcripts are summarised in segments and merged. It is saved with the meeting.
-* **Pause / Resume:** *Pause* appears next to *Stop* while recording. Buffered audio is transcribed first, then nothing is captured until *Resume*. The paused time is removed from the meeting clock, so the timer, note timestamps and saved audio all skip it.
+* **Pause / Resume:** *Pause* appears next to *Stop* while recording. Capture stops at once (audio already buffered is still transcribed) and nothing is kept until *Resume*. The paused time is removed from the meeting clock, so the timer, note timestamps and saved audio all skip it.
 * **Microphone:** the dropdown in the header picks an input device (default: follow the system default). It applies from the next *Start*, and the app rebuilds the stream if that device (or the default) changes mid-meeting, after the change has settled for 300 ms. If the chosen mic is unplugged it falls back to the default.
 * **Auto-stop on silence:** after 5 minutes with no sound on either track a banner offers *Keep recording*; otherwise the meeting stops a minute later. Pausing disables it.
 * **Save audio (opt-in):** tick *Save audio* before *Start* to write the raw tracks to disk while recording, so a crash loses at most the window being captured. A meeting with saved audio shows *Re-transcribe* (replaces the transcript with a fresh one from the audio; the old transcript is kept if anything fails) and *Delete audio*. *Continue* appends after the saved audio, so the timer may jump forward by any silence that ended the earlier part.

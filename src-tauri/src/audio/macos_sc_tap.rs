@@ -148,6 +148,7 @@ impl ScreenCaptureAudioTap {
                 let mut resampler = dsp::Resampler::new(48_000.0);
                 let mut out = Vec::new();
                 while let Ok(samples) = rx.recv() {
+                    if cap_clone.pause.is_paused() { continue; }
                     out.clear();
                     resampler.push(samples.into_iter(), &mut out);
                     if !out.is_empty() {

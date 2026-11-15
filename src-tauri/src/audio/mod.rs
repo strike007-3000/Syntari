@@ -37,8 +37,8 @@ pub struct Capture {
     // Samples the callbacks trimmed off the ring buffers since the drain thread last looked.
     pub mic_dropped: AtomicUsize,
     pub sys_dropped: AtomicUsize,
-    // Pause: the drain thread flushes what is buffered, then discards audio until resumed.
-    pub paused: AtomicBool,
+    // While paused the capture callbacks keep nothing (see pause.rs).
+    pub pause: pause::PauseClock,
 }
 
 #[derive(Serialize)]
@@ -84,6 +84,7 @@ where
         .build_input_stream(
             &cfg.config(),
             move |d: &[T], _| {
+                if cap.pause.is_paused() { return; }
                 out.clear();
                 rs.push(d.chunks(ch).map(|f| f.iter().map(|&x| cpal::Sample::to_sample::<f32>(x)).sum::<f32>() / ch as f32), &mut out);
                 let (buf, lvl, dropped) = if is_mic { (&cap.mic, &cap.mic_lvl, &cap.mic_dropped) } else { (&cap.sys, &cap.sys_lvl, &cap.sys_dropped) };
@@ -213,8 +214,7 @@ pub fn start(
         let mut aec = dsp::Aec::new();
         let mut leak = echo::Leak::default();
         let began = Instant::now();
-        let (mut pause, mut last_tick) = (pause::Pause::default(), Instant::now());
-        // Samples drained per track so far: a sample clock keeps chunk times monotonic even when transcription lags.
+                // Samples drained per track so far: a sample clock keeps chunk times monotonic even when transcription lags.
         let (mut sys_done, mut mic_done) = (0usize, 0usize);
         let mut last = Instant::now();
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -227,22 +227,6 @@ pub fn start(
 
         loop {
             let stopping = stop2.load(Ordering::Relaxed);
-            let tick = last_tick.elapsed();
-            last_tick = Instant::now();
-            let flush = match pause.step(cap.paused.load(Ordering::Relaxed), stopping, tick) {
-                pause::Step::Skip => {
-                    // paused: nothing is kept
-                    cap.sys.lock().unwrap().clear();
-                    cap.mic.lock().unwrap().clear();
-                    cap.sys_dropped.store(0, Ordering::Relaxed);
-                    cap.mic_dropped.store(0, Ordering::Relaxed);
-                    std::thread::sleep(Duration::from_millis(100));
-                    continue;
-                }
-                pause::Step::Flush => true,
-                pause::Step::Run => false,
-            };
-            let drain_all = stopping || flush;
             if mic_polled.elapsed() >= Duration::from_millis(500) {
                 mic_polled = Instant::now();
                 let now = pick_mic(&host, &mic_pref).and_then(|d| d.name().ok());
@@ -262,7 +246,7 @@ pub fn start(
             {
                 let mut b = cap.sys.lock().unwrap();
                 let produced = sys_done + b.len() + cap.sys_dropped.load(Ordering::Relaxed);
-                let pad = dsp::gap_pad(produced, (pause.active(began.elapsed()).as_secs_f64() * 16_000.0) as usize);
+                let pad = dsp::gap_pad(produced, (began.elapsed().saturating_sub(cap.pause.total()).as_secs_f64() * 16_000.0) as usize);
                 b.extend(std::iter::repeat(0.0).take(pad));
             }
             let has_window_samples = cap.sys.lock().unwrap().len() >= 16_000 * WINDOW_SECS as usize || cap.mic.lock().unwrap().len() >= 16_000 * WINDOW_SECS as usize;
@@ -274,7 +258,7 @@ pub fn start(
                     dsp::find_silence_gap(&s, 400).map_or(false, |p| p >= MIN_SEGMENT)
                 }
             };
-            if drain_all || has_window_samples || has_silence_gap || last.elapsed() >= Duration::from_secs(WINDOW_SECS) {
+            if stopping || has_window_samples || has_silence_gap || last.elapsed() >= Duration::from_secs(WINDOW_SECS) {
                 last = Instant::now();
 
                 // Trimmed samples are older than anything still buffered: count them so chunk times stay on the wall clock.
@@ -290,7 +274,7 @@ pub fn start(
                     let mut b = cap.sys.lock().unwrap();
                     let total = b.len();
                     // on stop, take everything: the retained overlap would otherwise never be transcribed or saved
-                    let drain_to = if drain_all {
+                    let drain_to = if stopping {
                         total
                     } else if total > MIN_SEGMENT {
                         let all: Vec<f32> = b.iter().copied().collect();
@@ -311,7 +295,7 @@ pub fn start(
                     // (no screen-recording permission; WASAPI sends nothing while nothing plays). Transcribe it
                     // anyway, or the mic would sit here until the ring buffer drops it.
                     let unpaired = (b.len() - n).saturating_sub(sys_left);
-                    if drain_all || unpaired >= 16_000 * WINDOW_SECS as usize / 2 { n += unpaired; }
+                    if stopping || unpaired >= 16_000 * WINDOW_SECS as usize / 2 { n += unpaired; }
                     (b.drain(..n).collect::<Vec<f32>>(), n)
                 };
 
