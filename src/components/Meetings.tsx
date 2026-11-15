@@ -19,14 +19,13 @@ export default function Meetings() {
   const [rows, setRows] = useState<MeetingRow[]>([]);
   // saved audio by meeting: bytes, seconds of audio, days since last written
   const [recs, setRecs] = useState<Record<number, [number, number, number]>>({});
-  const refresh = () => {
-    listSessions(q).then(setRows).catch(() => setRows([]));
-    invoke<[number, number, number, number][]>("list_recordings").then((l) => setRecs(Object.fromEntries(l.map(([id, b, s, a]) => [id, [b, s, a]])))).catch(() => setRecs({}));
-  };
+  const refreshRecs = () => invoke<[number, number, number, number][]>("list_recordings").then((l) => setRecs(Object.fromEntries(l.map(([id, b, s, a]) => [id, [b, s, a]])))).catch(() => setRecs({}));
+  const refresh = () => { listSessions(q).then(setRows).catch(() => setRows([])); refreshRecs(); };
   const totalMb = Object.values(recs).reduce((n, r) => n + r[0], 0) / 1e6;
   const mb = (id: number) => `${(recs[id][0] / 1e6).toFixed(0)} MB`;
   const interrupted = (r: MeetingRow) => !!recs[r.id] && r.ended_at === null && recs[r.id][1] - (r.last_ts ?? 0) / 1000 > 30;
-  useEffect(() => { refresh(); }, [q, listSessions]);
+  useEffect(() => { listSessions(q).then(setRows).catch(() => setRows([])); }, [q, listSessions]); // typing searches only the database
+  useEffect(() => { refreshRecs(); }, []);
   const remove = (id: number) => {
     if (confirm("Delete this meeting, its notes and its transcript? This cannot be undone."))
       deleteSession(id).then(refresh).catch((e) => alert(`Delete failed: ${e}`));
@@ -87,7 +86,7 @@ export default function Meetings() {
                 {interrupted(r) && (
                   <button
                     disabled={running}
-                    onClick={() => confirm("This meeting's recording runs past its transcript (it was probably interrupted). Rebuild the transcript from the saved audio?") && open(r.id).then(() => useStore.getState().retranscribe()).then(refresh).catch((e) => alert(`Re-transcribe failed: ${e}`))}
+                    onClick={() => confirm("This meeting's recording runs past its transcript (it was probably interrupted). Rebuild the transcript from the saved audio?") && loadSession(r.id).then(() => { if (useStore.getState().sessionId !== r.id) throw new Error("could not open the meeting"); return useStore.getState().retranscribe(); }).then(refresh).catch((e) => alert(`Re-transcribe failed: ${e}`))}
                     className="rounded-md bg-amber-500/15 px-2 py-1 text-xs text-amber-400 disabled:opacity-50"
                     title="Recording found from an interrupted meeting"
                   >Recover from audio</button>

@@ -302,7 +302,8 @@ impl FoundryEngine {
             return Ok(Vec::new());
         }
 
-        if is_stock_line(trimmed) {
+        // genuine one-word lines ("Thanks.", "Bye.") are kept: only over faint audio is a stock phrase made up
+        if is_stock_line(trimmed) && wav_rms(wav_bytes) < 0.02 {
             eprintln!("[Whisper] Stock phrase over faint audio, discarding chunk");
             return Ok(Vec::new());
         }
@@ -554,6 +555,12 @@ fn parse_action_line(s: &str) -> (String, String, Option<String>) {
 
 /// Lines whisper makes up over silence or faint sound. The whole chunk must be one of them; a real sentence that
 /// contains "thank you" is kept.
+/// RMS of a 16-bit mono WAV buffer's samples.
+fn wav_rms(wav: &[u8]) -> f32 {
+    let s: Vec<f32> = wav.get(44..).unwrap_or(&[]).chunks_exact(2).map(|p| i16::from_le_bytes([p[0], p[1]]) as f32 / 32768.0).collect();
+    if s.is_empty() { 0.0 } else { (s.iter().map(|v| v * v).sum::<f32>() / s.len() as f32).sqrt() }
+}
+
 fn is_stock_line(text: &str) -> bool {
     let t: String = text.to_lowercase().chars().filter(|c| c.is_alphanumeric() || c.is_whitespace()).collect();
     matches!(

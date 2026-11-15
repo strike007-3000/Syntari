@@ -202,18 +202,30 @@ pub fn start(
             None
         };
 
+        // Save audio was asked for: if it cannot be set up, the meeting does not start without it
+        let mut rec = match rec_dir {
+            Some(d) => match recording::Recorder::open(&d) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Cannot save audio to {}: {e}. Turn off Save audio or free up disk space.", d.display())));
+                    return;
+                }
+            },
+            None => None,
+        };
+        // the caller already moved a continued meeting's offset to the end of the saved audio
+        let rec_base = (offset_secs * 16_000.0) as usize;
+
         let _ = tx.send(Ok(()));
 
         // Follow the default microphone as it changes; a device change comes in bursts, so rebuild once it settles.
         let mut mic_name = pick_mic(&host, &mic_pref).and_then(|d| d.name().ok());
         let mut changed: Option<(Option<String>, Instant)> = None;
         let mut mic_polled = Instant::now();
-        // the caller already moved a continued meeting's offset to the end of the saved audio
-        let rec_base = (offset_secs * 16_000.0) as usize;
-        let mut rec = rec_dir.and_then(|d| recording::Recorder::open(&d).map_err(|e| eprintln!("[Recording] cannot open {}: {e}", d.display())).ok());
         let mut aec = dsp::Aec::new();
         let mut leak = echo::Leak::default();
         let began = Instant::now();
+        let mut last_totals = (0usize, 0usize); // samples each track had produced at the previous pass
                 // Samples drained per track so far: a sample clock keeps chunk times monotonic even when transcription lags.
         let (mut sys_done, mut mic_done) = (0usize, 0usize);
         let mut last = Instant::now();
@@ -232,11 +244,10 @@ pub fn start(
                 let now = pick_mic(&host, &mic_pref).and_then(|d| d.name().ok());
                 if now == mic_name { changed = None; }
                 else if changed.as_ref().map_or(false, |(n, t)| *n == now && t.elapsed() >= Duration::from_millis(300)) {
-                    changed = None;
-                    mic_name = now;
+                    // keep the old name on failure so the next poll tries again
                     match pick_mic(&host, &mic_pref).ok_or_else(|| "no input device".to_string()).and_then(|d| open(&d, &d.default_input_config().map_err(|e| e.to_string())?, cap.clone(), true)) {
-                        Ok(s) => { _mic = s; eprintln!("[Audio] default microphone changed, stream rebuilt"); }
-                        Err(e) => eprintln!("[Audio] microphone changed but could not be opened: {e}"),
+                        Ok(s) => { _mic = s; mic_name = now; changed = None; eprintln!("[Audio] default microphone changed, stream rebuilt"); }
+                        Err(e) => { changed = Some((now, Instant::now())); eprintln!("[Audio] microphone changed but could not be opened, will retry: {e}"); }
                     }
                 } else if changed.as_ref().map_or(true, |(n, _)| *n != now) {
                     changed = Some((now, Instant::now()));
@@ -246,8 +257,14 @@ pub fn start(
             {
                 let mut b = cap.sys.lock().unwrap();
                 let produced = sys_done + b.len() + cap.sys_dropped.load(Ordering::Relaxed);
+                // a callback that stopped delivering (nothing playing, or paused) leaves its last level behind: show silence
+                if produced == last_totals.0 { cap.sys_lvl.store(0f32.to_bits(), Ordering::Relaxed); }
+                let mic_total = mic_done + cap.mic.lock().unwrap().len() + cap.mic_dropped.load(Ordering::Relaxed);
+                if mic_total == last_totals.1 { cap.mic_lvl.store(0f32.to_bits(), Ordering::Relaxed); }
+                last_totals.1 = mic_total;
                 let pad = dsp::gap_pad(produced, (began.elapsed().saturating_sub(cap.pause.total()).as_secs_f64() * 16_000.0) as usize);
                 b.extend(std::iter::repeat(0.0).take(pad));
+                last_totals.0 = produced + pad;
             }
             let has_window_samples = cap.sys.lock().unwrap().len() >= 16_000 * WINDOW_SECS as usize || cap.mic.lock().unwrap().len() >= 16_000 * WINDOW_SECS as usize;
             // Fire early when a natural pause is found in the accumulated system audio.

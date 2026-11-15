@@ -67,16 +67,21 @@ impl Recorder {
     }
 }
 
-fn read(path: PathBuf) -> Vec<f32> {
+/// A missing file is an empty track; any other failure aborts, so a partial read never replaces a transcript.
+fn read(path: PathBuf) -> Result<Vec<f32>, String> {
     let mut b = Vec::new();
-    if let Ok(mut f) = File::open(path) { let _ = f.read_to_end(&mut b); }
-    b.chunks_exact(2).map(|p| i16::from_le_bytes([p[0], p[1]]) as f32 / 32768.0).collect()
+    match File::open(&path) {
+        Ok(mut f) => { f.read_to_end(&mut b).map_err(|e| format!("Cannot read {}: {e}", path.display()))?; }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("Cannot read {}: {e}", path.display())),
+    }
+    Ok(b.chunks_exact(2).map(|p| i16::from_le_bytes([p[0], p[1]]) as f32 / 32768.0).collect())
 }
 
 /// Transcribes a saved recording again, window by window, the way the live capture does.
 pub async fn retranscribe(dir: &Path, engine: &FoundryEngine) -> Result<Vec<TranscriptChunk>, String> {
     if !engine.is_ready() { return Err("Engine not ready".into()) }
-    let (mic, sys) = (read(dir.join("me.pcm")), read(dir.join("them.pcm")));
+    let (mic, sys) = (read(dir.join("me.pcm"))?, read(dir.join("them.pcm"))?);
     let total = mic.len().max(sys.len());
     if total == 0 { return Err("No recording found for this meeting".into()) }
     let win = RATE * 12;
@@ -116,11 +121,12 @@ mod tests {
         let mut r = Recorder::open(&d).unwrap();
         r.write(false, 100, &[0.5, -0.5]);
         drop(r);
-        let v = read(d.join("me.pcm"));
+        let v = read(d.join("me.pcm")).unwrap();
         assert_eq!(v.len(), 102);
         assert_eq!(v[99], 0.0);
         assert!((v[100] - 0.5).abs() < 1e-3 && (v[101] + 0.5).abs() < 1e-3);
         assert_eq!(size(&d), 204);
+        assert!(read(d.join("nothing.pcm")).unwrap().is_empty()); // a missing track is just empty
         let _ = std::fs::remove_dir_all(d);
     }
 }

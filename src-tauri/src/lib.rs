@@ -16,6 +16,8 @@ pub struct AppState {
     pub ai_engine: Arc<RwLock<FoundryEngine>>,
     pub model_error: std::sync::Mutex<Option<String>>,
     pub session: std::sync::Mutex<Option<(audio::Session, Instant)>>,
+    // a saved recording is being transcribed again: no live session may start meanwhile
+    pub retranscribing: std::sync::atomic::AtomicBool,
 }
 
 fn models_loaded(st: &AppState) -> bool {
@@ -36,6 +38,9 @@ fn models_ready(st: State<'_, AppState>) -> Result<bool, String> {
 fn start_syntari_session(app: AppHandle, st: State<'_, AppState>, offset_ms: u64, prior: Vec<ai::engine::TranscriptChunk>, record_session: Option<i64>, mic: Option<String>) -> Result<u64, String> {
     if !models_loaded(&st) {
         return Err("AI models are still loading".into());
+    }
+    if st.retranscribing.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err("A saved recording is being transcribed again; wait for it to finish".into());
     }
     let mut s = st.session.lock().unwrap();
     if s.is_some() {
@@ -125,10 +130,16 @@ fn delete_recording(app: AppHandle, session_id: i64) -> Result<(), String> {
 /// Transcribes a meeting's saved audio again; the frontend replaces the transcript with the result.
 #[tauri::command]
 async fn retranscribe(app: AppHandle, st: State<'_, AppState>, session_id: i64) -> Result<Vec<ai::engine::TranscriptChunk>, String> {
-    if st.session.lock().unwrap().is_some() { return Err("Stop the session first".into()) }
-    let d = audio::recording::dir(&app.path().app_data_dir().map_err(|e| e.to_string())?, session_id);
-    let engine = st.ai_engine.read().await;
-    audio::recording::retranscribe(&d, &engine).await
+    use std::sync::atomic::Ordering::SeqCst;
+    if st.retranscribing.swap(true, SeqCst) { return Err("Already re-transcribing".into()) }
+    let result = async {
+        if st.session.lock().unwrap().is_some() { return Err("Stop the session first".to_string()) }
+        let d = audio::recording::dir(&app.path().app_data_dir().map_err(|e| e.to_string())?, session_id);
+        let engine = st.ai_engine.read().await;
+        audio::recording::retranscribe(&d, &engine).await
+    }.await;
+    st.retranscribing.store(false, SeqCst);
+    result
 }
 
 #[tauri::command]
@@ -332,6 +343,7 @@ pub fn run() {
                 ai_engine: Arc::clone(&engine),
                 model_error: Default::default(),
                 session: std::sync::Mutex::new(None),
+                retranscribing: Default::default(),
             });
             let handle = app.handle().clone();
 

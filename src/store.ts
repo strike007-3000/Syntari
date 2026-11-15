@@ -162,6 +162,7 @@ export const useStore = create<State>((set, get) => ({
         set({ dbError: String(e) });
       }
     }
+    if (localStorage.getItem(RECORD_KEY) === "1" && sessionId === null) throw new Error("Cannot save audio: the database is unavailable. Turn off Save audio to record anyway.");
     try {
       // chunks carry only their start time; reuse it as both bounds for the lookback window
       const prior = resume ? get().transcript.map((c) => ({ start: c.ts / 1000, end: c.ts / 1000, speaker: c.speaker, text: c.text })) : [];
@@ -382,7 +383,7 @@ export const useStore = create<State>((set, get) => ({
     const like = `%${q.trim()}%`;
     return (await getDb()).select(
       `SELECT id, started_at, summary, title, ended_at,
-         (SELECT MAX(ts_ms) FROM transcript t WHERE t.session_id = s.id) AS last_ts,
+         CASE WHEN ended_at IS NULL THEN (SELECT MAX(ts_ms) FROM transcript t WHERE t.session_id = s.id) END AS last_ts,
          (SELECT COALESCE(expanded, raw) FROM notes n WHERE n.session_id = s.id ORDER BY ts_ms LIMIT 1) AS first_note
        FROM sessions s WHERE ?1 = '%%' OR summary LIKE ?1 OR title LIKE ?1
          OR EXISTS (SELECT 1 FROM notes n WHERE n.session_id = s.id AND (n.raw LIKE ?1 OR n.expanded LIKE ?1))
@@ -447,15 +448,21 @@ export const useStore = create<State>((set, get) => ({
     if (sessionId === null || running) return;
     const chunks = await invoke<{ start: number; end: number; speaker: "You" | "Remote"; text: string }[]>("retranscribe", { sessionId });
     if (get().sessionId !== sessionId) return; // another meeting was opened while it ran
+    if (get().running) throw new Error("A session started while re-transcribing; the existing transcript was kept");
     if (!chunks.length) throw new Error("No speech found in the saved audio; the existing transcript was kept");
     // New rows go below every existing id (live ids are positive, an earlier re-transcription used negatives), so they never
     // collide; one delete then removes everything older, and a failed insert removes only the new rows.
     const d = await getDb();
     const [{ lowest }] = await d.select<{ lowest: number }[]>("SELECT COALESCE(MIN(chunk_id), 0) AS lowest FROM transcript WHERE session_id=?", [sessionId]);
     const floor = Math.min(0, lowest);
-    const transcript = chunks.map((c, i) => ({ id: floor - (i + 1), speaker: c.speaker, text: c.text, ts: Math.round(c.start * 1000), start: c.start, end: c.end }));
+    // lines the user excluded from the summary stay excluded when a new line covers the same moment
+    const hidden = get().transcript.filter((c) => c.excluded);
+    const transcript = chunks.map((c, i) => ({
+      id: floor - (i + 1), speaker: c.speaker, text: c.text, ts: Math.round(c.start * 1000), start: c.start, end: c.end,
+      excluded: hidden.some((h) => h.speaker === c.speaker && h.ts >= c.start * 1000 && h.ts <= c.end * 1000),
+    }));
     try {
-      for (const c of transcript) await d.execute("INSERT INTO transcript (session_id, chunk_id, speaker, text, ts_ms) VALUES (?,?,?,?,?)", [sessionId, c.id, c.speaker, c.text, c.ts]);
+      for (const c of transcript) await d.execute("INSERT INTO transcript (session_id, chunk_id, speaker, text, ts_ms, excluded) VALUES (?,?,?,?,?,?)", [sessionId, c.id, c.speaker, c.text, c.ts, c.excluded ? 1 : 0]);
       await d.execute("DELETE FROM transcript WHERE session_id=? AND chunk_id>=?", [sessionId, floor]);
     } catch (e) {
       await d.execute("DELETE FROM transcript WHERE session_id=? AND chunk_id<?", [sessionId, floor]).catch(() => {});

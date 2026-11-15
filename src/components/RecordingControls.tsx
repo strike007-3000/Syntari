@@ -20,7 +20,13 @@ export default function RecordingControls() {
   const mics = useMics();
   const [quiet, keep] = useQuietSeconds();
   const { stop } = useStore();
-  useEffect(() => { if (quiet >= STOP_AFTER_S) stop().catch(() => {}); }, [quiet, stop]);
+  const stopping = useRef(false);
+  useEffect(() => {
+    if (quiet >= STOP_AFTER_S && !stopping.current) {
+      stopping.current = true; // stop() waits for the last transcription; ask once
+      stop().catch(() => {}).finally(() => { stopping.current = false; });
+    }
+  }, [quiet, stop]);
   return (
     <>
       {quiet >= WARN_AFTER_S && (
