@@ -58,7 +58,11 @@ interface State {
   editNote: (id: string, text: string) => void;
   renameSession: (id: number, title: string) => Promise<void>;
   backup: () => Promise<string>;
+  retranscribe: () => Promise<void>;
 }
+
+/** Crash-safe recording is opt-in: raw audio is written to the app data folder while a meeting runs. */
+export const RECORD_KEY = "syntari.recordAudio";
 
 let db: Promise<Database> | null = null;
 let insightInterval: ReturnType<typeof setInterval> | null = null;
@@ -152,7 +156,7 @@ export const useStore = create<State>((set, get) => ({
     try {
       // chunks carry only their start time; reuse it as both bounds for the lookback window
       const prior = resume ? get().transcript.map((c) => ({ start: c.ts / 1000, end: c.ts / 1000, speaker: c.speaker, text: c.text })) : [];
-      await invoke("start_syntari_session", { offsetMs: offset, prior });
+      await invoke("start_syntari_session", { offsetMs: offset, prior, recordSession: localStorage.getItem(RECORD_KEY) === "1" ? sessionId : null });
     } catch (e) {
       if (db && !resume && sessionId !== null) await db.execute("DELETE FROM sessions WHERE id=?", [sessionId]).catch(() => {});
       throw e;
@@ -392,6 +396,7 @@ export const useStore = create<State>((set, get) => ({
 
   async deleteSession(id) {
     const d = await getDb();
+    await invoke("delete_recording", { sessionId: id }).catch(() => {});
     await d.execute("DELETE FROM sessions WHERE id=?", [id]); // notes and transcript go with it via ON DELETE CASCADE, atomically
     if (get().sessionId === id) set({ sessionId: null, loaded: false, durationMs: 0, sessionElapsedSeconds: 0, notes: [], transcript: [], summary: "" });
   },
@@ -410,6 +415,19 @@ export const useStore = create<State>((set, get) => ({
   deleteNote(id) {
     set((s) => ({ notes: s.notes.filter((n) => n.id !== id) }));
     persist((d) => d.execute("DELETE FROM notes WHERE id=?", [id]));
+  },
+
+  async retranscribe() {
+    const { sessionId, running, summary } = get();
+    if (sessionId === null || running) return;
+    const chunks = await invoke<{ start: number; end: number; speaker: "You" | "Remote"; text: string }[]>("retranscribe", { sessionId });
+    if (get().sessionId !== sessionId) return; // another meeting was opened while it ran
+    const transcript = chunks.map((c, i) => ({ id: i + 1, speaker: c.speaker, text: c.text, ts: Math.round(c.start * 1000), start: c.start, end: c.end }));
+    set({ transcript, summaryStale: !!summary });
+    const d = await getDb();
+    await d.execute("DELETE FROM transcript WHERE session_id=?", [sessionId]);
+    for (const c of transcript) await d.execute("INSERT INTO transcript (session_id, chunk_id, speaker, text, ts_ms) VALUES (?,?,?,?,?)", [sessionId, c.id, c.speaker, c.text, c.ts]);
+    if (summary) await d.execute("UPDATE sessions SET summary_stale=1 WHERE id=?", [sessionId]);
   },
 
   async backup() {

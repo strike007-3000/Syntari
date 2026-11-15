@@ -104,3 +104,63 @@ pub fn apply_ducking(mic: &mut [f32], reference: &[f32]) {
     }
 }
 
+
+/// Samples of silence to append so a track that went quiet stays on the wall clock (loopback sends nothing while
+/// nothing plays). `produced`: samples the track has received so far; `elapsed`: samples the wall clock says it should have.
+/// Pads only a clear deficit and stops `MARGIN` short of now, so audio arriving late is not doubled.
+pub fn gap_pad(produced: usize, elapsed: usize) -> usize {
+    const AFTER: usize = 16_000 / 2; // 500 ms behind before any padding
+    const MARGIN: usize = 16_000 / 10; // keep 100 ms of slack
+    let behind = elapsed.saturating_sub(produced);
+    if behind < AFTER { 0 } else { behind - MARGIN }
+}
+
+/// Loudness envelope in 10 ms blocks.
+fn envelope(pcm: &[f32]) -> Vec<f32> {
+    pcm.chunks(160).map(rms).collect()
+}
+
+/// Best normalized correlation between two loudness envelopes with `b` lagging `a` by 0..=30 blocks (300 ms).
+/// High means the mic followed the system track: its voice is coming out of the speakers.
+pub fn envelope_corr(a: &[f32], b: &[f32]) -> f32 {
+    let (a, b) = (envelope(a), envelope(b));
+    let mut best = 0.0f32;
+    for lag in 0..=30usize {
+        let n = a.len().min(b.len().saturating_sub(lag));
+        if n < 50 { break; }
+        let (x, y) = (&a[..n], &b[lag..lag + n]);
+        let (mx, my) = (x.iter().sum::<f32>() / n as f32, y.iter().sum::<f32>() / n as f32);
+        let (mut c, mut vx, mut vy) = (0.0, 0.0, 0.0);
+        for i in 0..n {
+            let (dx, dy) = (x[i] - mx, y[i] - my);
+            c += dx * dy; vx += dx * dx; vy += dy * dy;
+        }
+        if vx > 1e-12 && vy > 1e-12 { best = best.max(c / (vx * vy).sqrt()); }
+    }
+    best
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gap_pad_leaves_small_gaps_and_pads_big_ones() {
+        assert_eq!(gap_pad(16_000, 16_000 + 4_000), 0);
+        assert_eq!(gap_pad(0, 16_000), 16_000 - 1_600);
+        assert_eq!(gap_pad(20_000, 10_000), 0);
+    }
+
+    #[test]
+    fn envelope_corr_sees_a_delayed_copy_but_not_unrelated_audio() {
+        // bursts of speech-like sound, 100 ms blocks on or off
+        let burst = |on: bool| -> Vec<f32> { (0..1600).map(|i| if on { (i as f32 * 0.3).sin() * 0.2 } else { 0.0 }).collect() };
+        let pattern = [1, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0];
+        let sys: Vec<f32> = pattern.iter().flat_map(|&p| burst(p == 1)).collect();
+        let mut mic = vec![0.0; 800]; // 50 ms late
+        mic.extend(sys.iter().map(|x| x * 0.3));
+        assert!(envelope_corr(&sys, &mic) > 0.8);
+        let other: Vec<f32> = [0, 1, 1, 0, 0, 1, 0, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 0, 1, 0].iter().flat_map(|&p| burst(p == 1)).collect();
+        assert!(envelope_corr(&sys, &other) < 0.6);
+    }
+}

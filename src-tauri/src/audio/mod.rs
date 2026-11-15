@@ -1,4 +1,6 @@
 mod dsp;
+mod echo;
+pub mod recording;
 #[cfg(target_os = "macos")]
 pub mod macos_sc_tap;
 #[cfg(target_os = "macos")]
@@ -142,6 +144,7 @@ pub fn start(
     tr: Arc<Transcript>,
     engine: Arc<tokio::sync::RwLock<FoundryEngine>>,
     offset_secs: f64, // resumed sessions continue the earlier timeline
+    rec_dir: Option<std::path::PathBuf>, // crash-safe recording: where to write the raw tracks
 ) -> Result<Session, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
@@ -156,7 +159,7 @@ pub fn start(
                 let c = d.default_input_config().map_err(|e| e.to_string())?;
                 open(&d, &c, cap.clone(), true)
             });
-        let _mic = match mic {
+        let mut _mic = match mic {
             Ok(s) => s,
             Err(e) => {
                 let _ = tx.send(Err(e));
@@ -186,7 +189,14 @@ pub fn start(
 
         let _ = tx.send(Ok(()));
 
+        // Follow the default microphone as it changes; a device change comes in bursts, so rebuild once it settles.
+        let mut mic_name = host.default_input_device().and_then(|d| d.name().ok());
+        let mut changed: Option<(Option<String>, Instant)> = None;
+        let mut mic_polled = Instant::now();
+        let mut rec = rec_dir.and_then(|d| recording::Recorder::open(&d).map_err(|e| eprintln!("[Recording] cannot open {}: {e}", d.display())).ok());
         let mut aec = dsp::Aec::new();
+        let mut leak = echo::Leak::default();
+        let began = Instant::now();
         // Samples drained per track so far: a sample clock keeps chunk times monotonic even when transcription lags.
         let (mut sys_done, mut mic_done) = (0usize, 0usize);
         let mut last = Instant::now();
@@ -200,6 +210,28 @@ pub fn start(
 
         loop {
             let stopping = stop2.load(Ordering::Relaxed);
+            if mic_polled.elapsed() >= Duration::from_millis(500) {
+                mic_polled = Instant::now();
+                let now = host.default_input_device().and_then(|d| d.name().ok());
+                if now == mic_name { changed = None; }
+                else if changed.as_ref().map_or(false, |(n, t)| *n == now && t.elapsed() >= Duration::from_millis(300)) {
+                    changed = None;
+                    mic_name = now;
+                    match host.default_input_device().ok_or_else(|| "no input device".to_string()).and_then(|d| open(&d, &d.default_input_config().map_err(|e| e.to_string())?, cap.clone(), true)) {
+                        Ok(s) => { _mic = s; eprintln!("[Audio] default microphone changed, stream rebuilt"); }
+                        Err(e) => eprintln!("[Audio] microphone changed but could not be opened: {e}"),
+                    }
+                } else if changed.as_ref().map_or(true, |(n, _)| *n != now) {
+                    changed = Some((now, Instant::now()));
+                }
+            }
+            // Loopback sends nothing while nothing plays: pad the system track with silence so chunk times stay on the wall clock.
+            {
+                let mut b = cap.sys.lock().unwrap();
+                let produced = sys_done + b.len() + cap.sys_dropped.load(Ordering::Relaxed);
+                let pad = dsp::gap_pad(produced, (began.elapsed().as_secs_f64() * 16_000.0) as usize);
+                b.extend(std::iter::repeat(0.0).take(pad));
+            }
             let has_window_samples = cap.sys.lock().unwrap().len() >= 16_000 * WINDOW_SECS as usize || cap.mic.lock().unwrap().len() >= 16_000 * WINDOW_SECS as usize;
             // Fire early when a natural pause is found in the accumulated system audio.
             let has_silence_gap = {
@@ -247,6 +279,11 @@ pub fn start(
                     (b.drain(..n).collect::<Vec<f32>>(), n)
                 };
 
+                // Leak evidence comes from the raw tracks, before the canceller touches the mic.
+                if dsp::rms(&sys) > 0.003 && dsp::rms(&mic) > 0.0006 {
+                    leak.add(dsp::envelope_corr(&sys, &mic));
+                }
+                let raw = rec.as_ref().map(|_| (sys.clone(), mic.clone()));
                 if !sys.is_empty() {
                     dsp::apply_ducking(&mut mic, &sys);
                     aec.process(&mut mic, &sys);
@@ -255,6 +292,11 @@ pub fn start(
                 let (sys_start, mic_start) = (sys_done, mic_done);
                 sys_done += sys_new;
                 mic_done += mic_new;
+                if let (Some(r), Some((rs, rm))) = (rec.as_mut(), raw) {
+                    let base = (offset_secs * 16_000.0) as usize;
+                    r.write(true, base + sys_start, &rs);
+                    r.write(false, base + mic_start, &rm);
+                }
                 // Echo-suppressed mic energy: bleed is cancelled to near zero, real speech survives.
                 // shortcut: threshold is a guess, tune on real hardware using the [Bleed] log lines.
                 let mic_residual = dsp::rms(&mic);
@@ -287,6 +329,13 @@ pub fn start(
 
                         if let Ok(chunks) = transcription_res {
                             for mut c in chunks {
+                                if speaker == "You" {
+                                    let recent = tr.lock().unwrap().iter().filter(|r| r.speaker == "Remote" && r.end >= start_secs - 20.0).map(|r| r.text.as_str()).collect::<Vec<_>>().join(" ");
+                                    if echo::is_echo(&c.text, &recent, leak.leaking()) {
+                                        eprintln!("[Echo] dropped mic line that copies the remote side");
+                                        continue;
+                                    }
+                                }
                                 c.start = start_secs;
                                 c.end = end_secs;
                                 tr.lock().unwrap().push(c.clone());

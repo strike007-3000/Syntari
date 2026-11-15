@@ -5,6 +5,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { useStore } from "../store";
 import { AudioLevels, fmtClock } from "../types";
 import { toMarkdown } from "./NotesDashboard";
+import RecordingControls from "./RecordingControls";
 
 const Meter = ({ label, icon, v }: { label: string; icon: React.ReactNode; v: number }) => (
   <div className="flex items-center gap-1.5 text-xs text-slate-400" title={`${label} level`}>
@@ -33,7 +34,7 @@ function Meters() {
 }
 
 export default function Header() {
-  const { running, sessionElapsedSeconds, modelMsg, modelsReady, start, stop, tickTimer, setScreen, loaded, notes, summary, summaryStale, dbError, dismissDbError, backup } = useStore();
+  const { running, sessionElapsedSeconds, modelMsg, modelsReady, start, stop, tickTimer, setScreen, loaded, notes, summary, summaryStale, transcript, dbError, dismissDbError, backup } = useStore();
   const [version, setVersion] = useState("");
   useEffect(() => { getVersion().then(setVersion).catch(() => {}); }, []);
   const [hasSystemAudio, setHasSystemAudio] = useState<boolean | null>(null);
@@ -93,6 +94,7 @@ export default function Header() {
       </div>
       <div className="flex shrink-0 items-center gap-4">
         <Meters />
+        <RecordingControls />
         {!running && (
           <>
             <button
@@ -108,7 +110,7 @@ export default function Header() {
               Copy Markdown
             </button>
             <button
-              onClick={() => invoke("export_markdown", { content: toMarkdown(notes, summary, summaryStale) }).catch((e) => alert(String(e)))}
+              onClick={() => invoke("export_markdown", { content: toMarkdown(notes, summary, summaryStale, transcript) }).catch((e) => alert(String(e)))}
               className="rounded-md border border-ink-700 bg-ink-800 px-2.5 py-1 text-xs text-slate-300 transition-colors hover:text-white"
               title="Save to your Downloads folder"
             >

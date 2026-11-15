@@ -89,7 +89,7 @@ function Item({ n }: { n: Note }) {
   );
 }
 
-export const toMarkdown = (notes: Note[], summary = "", stale = false) =>
+export const toMarkdown = (notes: Note[], summary = "", stale = false, transcript: TranscriptChunk[] = []) =>
   [summary && `## Summary${stale ? " (out of date: excluded transcript lines changed, regenerate)" : ""}\n${summary}`, ...SECTIONS.map(({ kind, title }) => {
     const items = notes.filter((n) => n.kind === kind && n.status !== "suggested");
     if (!items.length) return "";
@@ -99,7 +99,7 @@ export const toMarkdown = (notes: Note[], summary = "", stale = false) =>
         : `- ${n.expanded ?? n.raw} _[${fmtClock(n.ts)}]_`,
     );
     return `## ${title}\n${lines.join("\n")}`;
-  })].filter(Boolean).join("\n\n");
+  }), transcript.length && `## Transcript\n${transcript.map((c) => `**${c.speaker}** _[${fmtClock(c.ts)}]_ ${c.text}${c.excluded ? " _(excluded from summary)_" : ""}`).join("\n\n")}`].filter(Boolean).join("\n\n");
 
 // elapsed time and part counter so a slow on-device summary doesn't look like a hang
 function useSummarizeStatus(active: boolean) {

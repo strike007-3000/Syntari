@@ -33,7 +33,7 @@ fn models_ready(st: State<'_, AppState>) -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn start_syntari_session(app: AppHandle, st: State<'_, AppState>, offset_ms: u64, prior: Vec<ai::engine::TranscriptChunk>) -> Result<(), String> {
+fn start_syntari_session(app: AppHandle, st: State<'_, AppState>, offset_ms: u64, prior: Vec<ai::engine::TranscriptChunk>, record_session: Option<i64>) -> Result<(), String> {
     if !models_loaded(&st) {
         return Err("AI models are still loading".into());
     }
@@ -43,8 +43,12 @@ fn start_syntari_session(app: AppHandle, st: State<'_, AppState>, offset_ms: u64
     }
     // On Continue, seed the previous transcript so notes typed right away still get lookback context
     *st.tr.lock().unwrap() = prior;
+    let rec_dir = match record_session {
+        Some(id) => Some(audio::recording::dir(&app.path().app_data_dir().map_err(|e| e.to_string())?, id)),
+        None => None,
+    };
     let t0 = Instant::now();
-    let sess = audio::start(app, st.cap.clone(), st.tr.clone(), st.ai_engine.clone(), offset_ms as f64 / 1000.0)?;
+    let sess = audio::start(app, st.cap.clone(), st.tr.clone(), st.ai_engine.clone(), offset_ms as f64 / 1000.0, rec_dir)?;
     *s = Some((sess, t0));
     Ok(())
 }
@@ -75,6 +79,28 @@ fn export_markdown(content: String) -> Result<String, String> {
 }
 
 /// Destination for a database backup; the frontend writes it with `VACUUM INTO` (a plain file copy would miss WAL data).
+/// Bytes of saved audio for a meeting (0: none).
+#[tauri::command]
+fn recording_size(app: AppHandle, session_id: i64) -> Result<u64, String> {
+    Ok(audio::recording::size(&audio::recording::dir(&app.path().app_data_dir().map_err(|e| e.to_string())?, session_id)))
+}
+
+#[tauri::command]
+fn delete_recording(app: AppHandle, session_id: i64) -> Result<(), String> {
+    let d = audio::recording::dir(&app.path().app_data_dir().map_err(|e| e.to_string())?, session_id);
+    if d.exists() { std::fs::remove_dir_all(d).map_err(|e| e.to_string())?; }
+    Ok(())
+}
+
+/// Transcribes a meeting's saved audio again; the frontend replaces the transcript with the result.
+#[tauri::command]
+async fn retranscribe(app: AppHandle, st: State<'_, AppState>, session_id: i64) -> Result<Vec<ai::engine::TranscriptChunk>, String> {
+    if st.session.lock().unwrap().is_some() { return Err("Stop the session first".into()) }
+    let d = audio::recording::dir(&app.path().app_data_dir().map_err(|e| e.to_string())?, session_id);
+    let engine = st.ai_engine.read().await;
+    audio::recording::retranscribe(&d, &engine).await
+}
+
 #[tauri::command]
 fn backup_path() -> Result<String, String> {
     Ok(downloads_file("syntari-backup-{secs}.db")?.to_string_lossy().into_owned())
@@ -309,6 +335,9 @@ pub fn run() {
             expand_note,
             export_markdown,
             backup_path,
+            recording_size,
+            delete_recording,
+            retranscribe,
             reveal_path,
             open_logs,
             extract_insights,
