@@ -12,7 +12,7 @@ interface InsightItem {
   due?: string;
 }
 
-export interface MeetingRow { id: number; started_at: number; summary: string | null; title: string | null; first_note: string | null }
+export interface MeetingRow { id: number; started_at: number; summary: string | null; title: string | null; first_note: string | null; ended_at: number | null; last_ts: number | null }
 
 interface State {
   running: boolean;
@@ -57,8 +57,19 @@ interface State {
   deleteNote: (id: string) => void;
   editNote: (id: string, text: string) => void;
   renameSession: (id: number, title: string) => Promise<void>;
+  paused: boolean;
+  pausedAt: number | null; // while paused the meeting clock stands still
+  pause: () => Promise<void>;
+  resume: () => Promise<void>;
   backup: () => Promise<string>;
+  retranscribe: () => Promise<void>;
 }
+
+/** Crash-safe recording is opt-in: raw audio is written to the app data folder while a meeting runs. */
+export const RECORD_KEY = "syntari.recordAudio";
+export const MIC_KEY = "syntari.mic";
+/** The meeting clock: frozen while paused. */
+export const clockNow = (s: { pausedAt: number | null }) => s.pausedAt ?? Date.now();
 
 let db: Promise<Database> | null = null;
 let insightInterval: ReturnType<typeof setInterval> | null = null;
@@ -70,7 +81,7 @@ export const pollInsights = () => {
   const { sessionId, startedAt } = useStore.getState();
   return (insightRun = insightRun.then(async () => {
     if (useStore.getState().sessionId !== sessionId) return;
-    const nowMs = Date.now() - startedAt;
+    const nowMs = clockNow(useStore.getState()) - startedAt;
     try {
       const [items, next] = await invoke<[InsightItem[], number]>("extract_insights", { from: insightCursor });
       if (useStore.getState().sessionId !== sessionId) return; // another meeting was opened while the model ran
@@ -101,6 +112,8 @@ const persist = (fn: (d: Database) => Promise<unknown>) =>
 
 export const useStore = create<State>((set, get) => ({
   running: false,
+  paused: false,
+  pausedAt: null,
   sessionId: null,
   startedAt: 0,
   sessionElapsedSeconds: 0,
@@ -126,7 +139,7 @@ export const useStore = create<State>((set, get) => ({
   tickTimer: () => {
     const { running, startedAt } = get();
     if (running && startedAt > 0) {
-      set({ sessionElapsedSeconds: Math.floor((Date.now() - startedAt) / 1000) });
+      if (!get().paused) set({ sessionElapsedSeconds: Math.floor((Date.now() - startedAt) / 1000) });
     }
   },
 
@@ -134,8 +147,8 @@ export const useStore = create<State>((set, get) => ({
     // A loaded past session is continued in place; otherwise a new one is created.
     const { loaded, sessionId: prevId, durationMs, notes: prevNotes } = get();
     const resume = loaded && prevId !== null;
-    const offset = resume ? durationMs : 0;
-    const startedAt = Date.now() - offset;
+    let offset = resume ? durationMs : 0;
+    let startedAt = Date.now() - offset;
     // Create the DB session first so no note/chunk can be saved with a null sessionId
     // Best-effort: capture must still work when the keychain/SQL plugin is unavailable (sessionId stays null)
     let db: Database | null = null;
@@ -149,10 +162,13 @@ export const useStore = create<State>((set, get) => ({
         set({ dbError: String(e) });
       }
     }
+    if (localStorage.getItem(RECORD_KEY) === "1" && sessionId === null) throw new Error("Cannot save audio: the database is unavailable. Turn off Save audio to record anyway.");
     try {
       // chunks carry only their start time; reuse it as both bounds for the lookback window
       const prior = resume ? get().transcript.map((c) => ({ start: c.ts / 1000, end: c.ts / 1000, speaker: c.speaker, text: c.text })) : [];
-      await invoke("start_syntari_session", { offsetMs: offset, prior });
+      // the backend may move the start later, to the end of the saved audio
+      offset = await invoke<number>("start_syntari_session", { offsetMs: offset, prior, recordSession: localStorage.getItem(RECORD_KEY) === "1" ? sessionId : null, mic: localStorage.getItem(MIC_KEY) ?? "" });
+      startedAt = Date.now() - offset;
     } catch (e) {
       if (db && !resume && sessionId !== null) await db.execute("DELETE FROM sessions WHERE id=?", [sessionId]).catch(() => {});
       throw e;
@@ -172,11 +188,24 @@ export const useStore = create<State>((set, get) => ({
     insightInterval = setInterval(() => { if (get().running) pollInsights(); }, 30_000);
   },
 
+  async pause() {
+    if (!get().running || get().paused) return;
+    await invoke("set_paused", { paused: true });
+    set({ paused: true, pausedAt: Date.now() });
+  },
+
+  async resume() {
+    const { paused, pausedAt, startedAt } = get();
+    if (!paused || pausedAt === null) return;
+    await invoke("set_paused", { paused: false });
+    set({ paused: false, pausedAt: null, startedAt: startedAt + (Date.now() - pausedAt) }); // the pause does not count towards the meeting's time
+  },
+
   async stop() {
     if (insightInterval) { clearInterval(insightInterval); insightInterval = null; }
     await invoke("stop_syntari_session");
     const { sessionId, startedAt } = get();
-    set({ running: false, durationMs: Date.now() - startedAt });
+    set({ running: false, durationMs: clockNow(get()) - startedAt, paused: false, pausedAt: null });
     if (sessionId) persist((d) => d.execute("UPDATE sessions SET ended_at=? WHERE id=?", [Date.now(), sessionId]));
     pollInsights(); // the tail since the last poll, where the action items usually are
   },
@@ -206,7 +235,7 @@ export const useStore = create<State>((set, get) => ({
     if (ts === undefined) {
       if (running && startedAt > 0) {
         // the clock, not the last chunk: after a silence the last chunk can be minutes old
-        ts = Math.max(0, Date.now() - startedAt);
+        ts = Math.max(0, clockNow(get()) - startedAt);
       } else if (transcript.length > 0) {
         // chunk ids are random, so never trust array order for "latest"
         ts = Math.max(...transcript.map((c) => (c.end !== undefined ? c.end * 1000 : c.ts)));
@@ -353,7 +382,8 @@ export const useStore = create<State>((set, get) => ({
   async listSessions(q = "") {
     const like = `%${q.trim()}%`;
     return (await getDb()).select(
-      `SELECT id, started_at, summary, title,
+      `SELECT id, started_at, summary, title, ended_at,
+         CASE WHEN ended_at IS NULL THEN (SELECT MAX(ts_ms) FROM transcript t WHERE t.session_id = s.id) END AS last_ts,
          (SELECT COALESCE(expanded, raw) FROM notes n WHERE n.session_id = s.id ORDER BY ts_ms LIMIT 1) AS first_note
        FROM sessions s WHERE ?1 = '%%' OR summary LIKE ?1 OR title LIKE ?1
          OR EXISTS (SELECT 1 FROM notes n WHERE n.session_id = s.id AND (n.raw LIKE ?1 OR n.expanded LIKE ?1))
@@ -392,6 +422,7 @@ export const useStore = create<State>((set, get) => ({
 
   async deleteSession(id) {
     const d = await getDb();
+    await invoke("delete_recording", { sessionId: id }); // a recording that cannot be removed keeps its meeting, so no audio is orphaned
     await d.execute("DELETE FROM sessions WHERE id=?", [id]); // notes and transcript go with it via ON DELETE CASCADE, atomically
     if (get().sessionId === id) set({ sessionId: null, loaded: false, durationMs: 0, sessionElapsedSeconds: 0, notes: [], transcript: [], summary: "" });
   },
@@ -410,6 +441,35 @@ export const useStore = create<State>((set, get) => ({
   deleteNote(id) {
     set((s) => ({ notes: s.notes.filter((n) => n.id !== id) }));
     persist((d) => d.execute("DELETE FROM notes WHERE id=?", [id]));
+  },
+
+  async retranscribe() {
+    const { sessionId, running, summary } = get();
+    if (sessionId === null || running) return;
+    const chunks = await invoke<{ start: number; end: number; speaker: "You" | "Remote"; text: string }[]>("retranscribe", { sessionId });
+    if (get().sessionId !== sessionId) return; // another meeting was opened while it ran
+    if (get().running) throw new Error("A session started while re-transcribing; the existing transcript was kept");
+    if (!chunks.length) throw new Error("No speech found in the saved audio; the existing transcript was kept");
+    // New rows go below every existing id (live ids are positive, an earlier re-transcription used negatives), so they never
+    // collide; one delete then removes everything older, and a failed insert removes only the new rows.
+    const d = await getDb();
+    const [{ lowest }] = await d.select<{ lowest: number }[]>("SELECT COALESCE(MIN(chunk_id), 0) AS lowest FROM transcript WHERE session_id=?", [sessionId]);
+    const floor = Math.min(0, lowest);
+    // lines the user excluded from the summary stay excluded when a new line covers the same moment
+    const hidden = get().transcript.filter((c) => c.excluded);
+    const transcript = chunks.map((c, i) => ({
+      id: floor - (i + 1), speaker: c.speaker, text: c.text, ts: Math.round(c.start * 1000), start: c.start, end: c.end,
+      excluded: hidden.some((h) => h.speaker === c.speaker && h.ts >= c.start * 1000 && h.ts <= c.end * 1000),
+    }));
+    try {
+      for (const c of transcript) await d.execute("INSERT INTO transcript (session_id, chunk_id, speaker, text, ts_ms, excluded) VALUES (?,?,?,?,?,?)", [sessionId, c.id, c.speaker, c.text, c.ts, c.excluded ? 1 : 0]);
+      await d.execute("DELETE FROM transcript WHERE session_id=? AND chunk_id>=?", [sessionId, floor]);
+    } catch (e) {
+      await d.execute("DELETE FROM transcript WHERE session_id=? AND chunk_id<?", [sessionId, floor]).catch(() => {});
+      throw e;
+    }
+    if (summary) await d.execute("UPDATE sessions SET summary_stale=1 WHERE id=?", [sessionId]).catch(() => {});
+    if (get().sessionId === sessionId) set({ transcript, summaryStale: !!summary });
   },
 
   async backup() {

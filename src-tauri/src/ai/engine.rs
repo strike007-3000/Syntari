@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 pub type Progress = Arc<dyn Fn(&str, f64) + Send + Sync>;
 use foundry_local_sdk::{
-    AudioSession, ChatSession, FoundryLocalConfig, FoundryLocalManager, Item, LogLevel, Model, Request,
+    AudioSession, ChatSession, FoundryLocalConfig, FoundryLocalManager, Item, LogLevel, Model, Request, RequestOptions, SearchOptions,
 };
 use serde::{Deserialize, Serialize};
 
@@ -302,6 +302,12 @@ impl FoundryEngine {
             return Ok(Vec::new());
         }
 
+        // genuine one-word lines ("Thanks.", "Bye.") are kept: only over faint audio is a stock phrase made up
+        if is_stock_line(trimmed) && wav_rms(wav_bytes) < 0.02 {
+            eprintln!("[Whisper] Stock phrase over faint audio, discarding chunk");
+            return Ok(Vec::new());
+        }
+
         if is_looping(trimmed) {
             eprintln!("[Whisper] Hallucination loop detected, discarding chunk");
             return Ok(Vec::new());
@@ -393,7 +399,7 @@ impl FoundryEngine {
             context_text, raw_shorthand
         );
 
-        let reply = self.complete(system_prompt, user_prompt).await?;
+        let reply = self.complete(system_prompt, user_prompt, 0.3).await?;
         eprintln!("[Syntari Inference] model reply: {reply}");
         let (category, note, owner, due) = parse_expansion(&reply, raw_shorthand);
         eprintln!("[Syntari Inference] raw=\"{raw_shorthand}\" -> {category}: \"{note}\"");
@@ -415,13 +421,23 @@ impl FoundryEngine {
     }
 
     /// One-shot LLM call; returns the concatenated text of the response.
-    async fn complete(&self, system: &str, user: String) -> Result<String, String> {
+    async fn complete(&self, system: &str, user: String, temperature: f32) -> Result<String, String> {
         let session = self.chat_session.as_ref().ok_or("AI model not loaded")?;
         let _one_at_a_time = self.chat_lock.lock().await;
         let request = Request::from_items(vec![
             Item::system_message(vec![Item::text(system)]),
             Item::user_message(vec![Item::text(user)]),
-        ]);
+        ])
+        .with_options(RequestOptions {
+            search: SearchOptions {
+                temperature: Some(temperature),
+                top_p: Some(0.9),
+                do_sample: Some(true),
+                max_output_tokens: Some(700), // a runaway generation can never hold the model for minutes
+                ..Default::default()
+            },
+            ..Default::default()
+        });
         let response = session.process_request(request).await.map_err(|e| format!("Inference error: {e}"))?;
         let mut raw = String::new();
         for item in &response.items {
@@ -438,12 +454,24 @@ impl FoundryEngine {
         Ok(raw.trim().to_string())
     }
 
+    /// Runs `complete` and rejects looping/degenerate output, retrying hotter; `fallback` is used if every try fails.
+    async fn complete_checked(&self, system: &str, user: &str, fallback: impl FnOnce() -> String) -> Result<String, String> {
+        for temp in [0.3, 0.6, 0.9] {
+            let out = self.complete(system, user.to_string(), temp).await?;
+            if !out.is_empty() && !is_degenerate(&out) {
+                return Ok(out);
+            }
+            eprintln!("[Summary] Degenerate output at temperature {temp}, retrying");
+        }
+        Ok(fallback())
+    }
+
     /// Summarize a whole transcript. Long transcripts are summarized in segments, then merged.
     pub async fn summarize(&self, chunks: &[TranscriptChunk], on_part: impl Fn(usize, usize)) -> Result<String, String> {
         if chunks.is_empty() {
             return Err("Transcript is empty".into());
         }
-        const SEGMENT_CHARS: usize = 6000; // keeps each prompt well inside the small model's context
+        const SEGMENT_CHARS: usize = 4000; // keeps each prompt well inside the small model's context
         let sys = "You summarize meeting transcripts. Write a concise markdown summary: a short overview paragraph, \
             then bullet lists under '### Key Points', '### Decisions', '### Action Items' (omit empty sections). \
             Use only what the transcript states. The transcript is raw system audio, so it may include unrelated content \
@@ -456,7 +484,9 @@ impl FoundryEngine {
         for seg in segments {
             done += 1;
             on_part(done, total.max(done));
-            parts.push(self.complete(sys, format!("TRANSCRIPT:\n{seg}\nSUMMARY:")).await?);
+            let user = format!("TRANSCRIPT:\n{seg}\nSUMMARY:");
+            // Fallback keeps the guarantee: the user gets the raw excerpt, never garbage.
+            parts.push(self.complete_checked(sys, &user, || format!("_Automatic summary failed for this section; excerpt:_\n\n{}", seg.chars().take(1500).collect::<String>())).await?);
         }
         // Merge in rounds so a long meeting's partial summaries never outgrow one prompt.
         while parts.len() > 1 {
@@ -468,7 +498,8 @@ impl FoundryEngine {
             for g in groups {
                 done += 1;
                 on_part(done, total.max(done));
-                next.push(self.complete(sys, format!("Merge these partial summaries of one meeting into a single summary:\n\n{g}\nSUMMARY:")).await?);
+                let user = format!("Merge these partial summaries of one meeting into a single summary:\n\n{g}\nSUMMARY:");
+                next.push(self.complete_checked(sys, &user, || g.replace("\n\n---\n\n", "\n\n")).await?);
             }
             parts = next;
         }
@@ -498,7 +529,7 @@ impl FoundryEngine {
             DISCUSSION: <key topic discussed>\n\
             Rules: only output items explicitly stated. If nothing significant, output NONE.";
 
-        let raw = self.complete(system_prompt, format!("TRANSCRIPT:\n{}\n\nEXTRACT ITEMS:", context_text)).await?;
+        let raw = self.complete(system_prompt, format!("TRANSCRIPT:\n{}\n\nEXTRACT ITEMS:", context_text), 0.3).await?;
         eprintln!("[Syntari Insights] raw: {:?}", &raw);
         if is_looping(&raw) {
             eprintln!("[Syntari Insights] Hallucination loop detected, discarding");
@@ -522,10 +553,47 @@ fn parse_action_line(s: &str) -> (String, String, Option<String>) {
     }
 }
 
+/// Lines whisper makes up over silence or faint sound. The whole chunk must be one of them; a real sentence that
+/// contains "thank you" is kept.
+/// RMS of a 16-bit mono WAV buffer's samples.
+fn wav_rms(wav: &[u8]) -> f32 {
+    let s: Vec<f32> = wav.get(44..).unwrap_or(&[]).chunks_exact(2).map(|p| i16::from_le_bytes([p[0], p[1]]) as f32 / 32768.0).collect();
+    if s.is_empty() { 0.0 } else { (s.iter().map(|v| v * v).sum::<f32>() / s.len() as f32).sqrt() }
+}
+
+fn is_stock_line(text: &str) -> bool {
+    let t: String = text.to_lowercase().chars().filter(|c| c.is_alphanumeric() || c.is_whitespace()).collect();
+    matches!(
+        t.split_whitespace().collect::<Vec<_>>().join(" ").as_str(),
+        "thank you" | "thanks" | "thanks for watching" | "thank you for watching" | "bye" | "you" | "the end"
+            | "subtitles by the amaraorg community" | "please subscribe" | "like and subscribe"
+    )
+}
+
+#[cfg(test)]
+mod stock_tests {
+    use super::is_stock_line;
+
+    #[test]
+    fn only_whole_stock_lines_go() {
+        assert!(is_stock_line("Thank you."));
+        assert!(is_stock_line("Thanks for watching!"));
+        assert!(!is_stock_line("Thank you, that covers the budget."));
+        assert!(!is_stock_line("Ship it Friday"));
+    }
+}
+
 /// Whisper and the chat model both get stuck repeating themselves: any 4-gram repeating >3 times signals a loop.
 fn is_looping(text: &str) -> bool {
     let words: Vec<&str> = text.split_whitespace().collect();
     words.len() >= 16 && words.windows(4).enumerate().any(|(i, gram)| words.windows(4).skip(i + 1).filter(|w| *w == gram).count() > 3)
+}
+
+/// Looping, or so few distinct words that it cannot be a real summary.
+fn is_degenerate(text: &str) -> bool {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let unique: std::collections::HashSet<&str> = words.iter().copied().collect();
+    is_looping(text) || (words.len() >= 30 && unique.len() * 4 < words.len())
 }
 
 /// Greedily joins pieces into groups of at most `max` chars (a single oversized piece keeps its own group).
@@ -634,6 +702,7 @@ mod tests {
     #[test]
     fn detects_loops() {
         assert!(is_looping(&"a b c d ".repeat(5)));
+        assert!(is_degenerate(&"and ".repeat(40)));
         assert!(!is_looping("one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen"));
     }
 }

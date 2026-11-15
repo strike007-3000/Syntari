@@ -16,6 +16,8 @@ pub struct AppState {
     pub ai_engine: Arc<RwLock<FoundryEngine>>,
     pub model_error: std::sync::Mutex<Option<String>>,
     pub session: std::sync::Mutex<Option<(audio::Session, Instant)>>,
+    // a saved recording is being transcribed again: no live session may start meanwhile
+    pub retranscribing: std::sync::atomic::AtomicBool,
 }
 
 fn models_loaded(st: &AppState) -> bool {
@@ -33,9 +35,12 @@ fn models_ready(st: State<'_, AppState>) -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn start_syntari_session(app: AppHandle, st: State<'_, AppState>, offset_ms: u64, prior: Vec<ai::engine::TranscriptChunk>) -> Result<(), String> {
+fn start_syntari_session(app: AppHandle, st: State<'_, AppState>, offset_ms: u64, prior: Vec<ai::engine::TranscriptChunk>, record_session: Option<i64>, mic: Option<String>) -> Result<u64, String> {
     if !models_loaded(&st) {
         return Err("AI models are still loading".into());
+    }
+    if st.retranscribing.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err("A saved recording is being transcribed again; wait for it to finish".into());
     }
     let mut s = st.session.lock().unwrap();
     if s.is_some() {
@@ -43,10 +48,17 @@ fn start_syntari_session(app: AppHandle, st: State<'_, AppState>, offset_ms: u64
     }
     // On Continue, seed the previous transcript so notes typed right away still get lookback context
     *st.tr.lock().unwrap() = prior;
+    st.cap.pause.reset();
+    let rec_dir = match record_session {
+        Some(id) => Some(audio::recording::dir(&app.path().app_data_dir().map_err(|e| e.to_string())?, id)),
+        None => None,
+    };
+    // saved audio is the timeline: a continued meeting starts where it ends, so notes, transcript and re-transcribed lines share one clock
+    let offset_ms = offset_ms.max(rec_dir.as_deref().map_or(0, |d| audio::recording::end_samples(d) as u64 / 16));
     let t0 = Instant::now();
-    let sess = audio::start(app, st.cap.clone(), st.tr.clone(), st.ai_engine.clone(), offset_ms as f64 / 1000.0)?;
+    let sess = audio::start(app, st.cap.clone(), st.tr.clone(), st.ai_engine.clone(), offset_ms as f64 / 1000.0, rec_dir, mic.filter(|m| !m.is_empty()))?;
     *s = Some((sess, t0));
-    Ok(())
+    Ok(offset_ms)
 }
 
 fn downloads_file(name: &str) -> Result<PathBuf, String> {
@@ -75,6 +87,61 @@ fn export_markdown(content: String) -> Result<String, String> {
 }
 
 /// Destination for a database backup; the frontend writes it with `VACUUM INTO` (a plain file copy would miss WAL data).
+/// Bytes of saved audio for a meeting (0: none).
+#[tauri::command]
+fn recording_size(app: AppHandle, session_id: i64) -> Result<u64, String> {
+    Ok(audio::recording::size(&audio::recording::dir(&app.path().app_data_dir().map_err(|e| e.to_string())?, session_id)))
+}
+
+#[tauri::command]
+fn set_paused(st: State<'_, AppState>, paused: bool) {
+    st.cap.pause.set(paused);
+}
+
+#[tauri::command]
+fn list_mics() -> Vec<String> {
+    audio::mic_names()
+}
+
+/// Every saved recording: (meeting id, bytes, seconds of audio, days since last written).
+#[tauri::command]
+fn list_recordings(app: AppHandle) -> Result<Vec<(i64, u64, u64, u64)>, String> {
+    Ok(audio::recording::list(&app.path().app_data_dir().map_err(|e| e.to_string())?))
+}
+
+/// Deletes saved audio not written for `days` days; returns the bytes freed.
+#[tauri::command]
+fn delete_old_recordings(app: AppHandle, days: u64) -> Result<u64, String> {
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut freed = 0;
+    for (id, bytes, _, age) in audio::recording::list(&base) {
+        if age >= days && std::fs::remove_dir_all(audio::recording::dir(&base, id)).is_ok() { freed += bytes; }
+    }
+    Ok(freed)
+}
+
+#[tauri::command]
+fn delete_recording(app: AppHandle, session_id: i64) -> Result<(), String> {
+    let d = audio::recording::dir(&app.path().app_data_dir().map_err(|e| e.to_string())?, session_id);
+    if d.exists() { std::fs::remove_dir_all(d).map_err(|e| e.to_string())?; }
+    Ok(())
+}
+
+/// Transcribes a meeting's saved audio again; the frontend replaces the transcript with the result.
+#[tauri::command]
+async fn retranscribe(app: AppHandle, st: State<'_, AppState>, session_id: i64) -> Result<Vec<ai::engine::TranscriptChunk>, String> {
+    use std::sync::atomic::Ordering::SeqCst;
+    if st.retranscribing.swap(true, SeqCst) { return Err("Already re-transcribing".into()) }
+    let result = async {
+        if st.session.lock().unwrap().is_some() { return Err("Stop the session first".to_string()) }
+        let d = audio::recording::dir(&app.path().app_data_dir().map_err(|e| e.to_string())?, session_id);
+        let engine = st.ai_engine.read().await;
+        audio::recording::retranscribe(&d, &engine).await
+    }.await;
+    st.retranscribing.store(false, SeqCst);
+    result
+}
+
 #[tauri::command]
 fn backup_path() -> Result<String, String> {
     Ok(downloads_file("syntari-backup-{secs}.db")?.to_string_lossy().into_owned())
@@ -276,6 +343,7 @@ pub fn run() {
                 ai_engine: Arc::clone(&engine),
                 model_error: Default::default(),
                 session: std::sync::Mutex::new(None),
+                retranscribing: Default::default(),
             });
             let handle = app.handle().clone();
 
@@ -309,6 +377,13 @@ pub fn run() {
             expand_note,
             export_markdown,
             backup_path,
+            recording_size,
+            set_paused,
+            list_mics,
+            list_recordings,
+            delete_old_recordings,
+            delete_recording,
+            retranscribe,
             reveal_path,
             open_logs,
             extract_insights,
