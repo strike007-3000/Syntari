@@ -188,7 +188,7 @@ Apple Silicon only. Builds are ad-hoc signed, not notarized, so the cask clears 
 
 ```bash
 brew tap strike007-3000/syntari https://github.com/strike007-3000/Syntari
-brew install --cask syntari
+brew install --cask strike007-3000/syntari/syntari
 ```
 
 Without Homebrew, download the `.dmg` from Releases, then right-click the app > Open, or run `xattr -dr com.apple.quarantine /Applications/Syntari.app`.
