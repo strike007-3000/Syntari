@@ -114,6 +114,8 @@ The model still expands the text from the transcript; only the category is fixed
 
 ## 5. Security & Threat Model
 
+See also the [Privacy Policy](PRIVACY.md).
+
 | Vector | Mitigation |
 | :--- | :--- |
 | **Network Egress** | CSP restricts the frontend to `default-src 'self'`. Backend network access is the one-time model download on first run (see Models), plus whatever the Foundry Local runtime does internally (unverified; see `scripts/check-egress.sh`). Syntari itself never transmits user data. |
@@ -180,6 +182,30 @@ Models are NOT in the repo or the bundle; they live in the app data dir (see Mod
 
 ## 7. Development & Setup
 
+### Install on macOS (Homebrew)
+
+Apple Silicon only. Builds are ad-hoc signed, not notarized, so the cask clears the Gatekeeper quarantine flag for you.
+
+```bash
+brew tap strike007-3000/syntari https://github.com/strike007-3000/Syntari
+brew install --cask strike007-3000/syntari/syntari
+```
+
+Without Homebrew, download the `.dmg` from Releases, then right-click the app > Open, or run `xattr -dr com.apple.quarantine /Applications/Syntari.app`.
+
+The cask always installs the newest macOS build (the `macos-latest` release, refreshed by the macOS workflow). Update with `brew upgrade --cask --greedy syntari`.
+
+### Install on Windows (Scoop)
+
+Builds are unsigned, so SmartScreen may warn on first launch (More info > Run anyway).
+
+```powershell
+scoop bucket add syntari https://github.com/strike007-3000/Syntari
+scoop install syntari
+```
+
+The manifest always installs the newest Windows build (the `windows-latest` release). Scoop can't detect new builds, so update with `scoop uninstall syntari; scoop install syntari --no-cache`. Or download the `.exe` from Releases.
+
 ### Prerequisites
 
 * macOS 13+ (the bundle minimum in `tauri.conf.json`; Apple Silicon recommended) or Windows 11 (x64 or ARM64)
@@ -245,7 +271,7 @@ npm run tauri dev
 * **Foundry runtime is closed source:** it may make its own telemetry/metadata requests; verify with `scripts/check-egress.sh` or a network monitor.
 * **Foundry licensing (reviewed, not legal advice):** the `foundry-local-sdk` crate and the `Microsoft.AI.Foundry.Local.Runtime` NuGet package (the native `foundry_local` library plus ONNX Runtime / GenAI, which the build downloads for Windows and macOS) are **MIT**, so bundling them in an installer is permitted if you ship the MIT notice and `ThirdPartyNotices` from the package. The **Foundry Local CLI** installed via `brew`/`winget` is under separate Microsoft terms that forbid combining it with your application for others to use, so do not redistribute the CLI or its `libfoundry_local.dylib`. Model weights are fetched from the Foundry catalog at first run, not bundled; whisper-small and phi-4-mini are MIT-licensed upstream, but confirm the catalog entries' terms before bundling weights. The macOS build uses the same SDK-downloaded runtime as Windows (no Homebrew copy).
 * **Classification accuracy:** phi-4-mini is a small model; ambiguous or tentative notes may be mis-filed. Use the *Move to* menu.
-* **Windows is new and untested on hardware:** it compiles in CI but needs a real run. Differences from macOS: system audio uses WASAPI loopback on the default output device (no permission prompt; capture follows the device's mix format, usually 48 kHz stereo); only the microphone privacy toggle matters (*Settings > Privacy > Microphone*); on exit the process is ended with `TerminateProcess` (the Windows counterpart of `_exit`) to skip Foundry's teardown, so confirm there is no crash dialog on quit.
+* **Windows differences from macOS** (tested on real hardware by [@askfredbv](https://github.com/askfredbv)): system audio uses WASAPI loopback on the default output device (no permission prompt; capture follows the device's mix format, usually 48 kHz stereo); only the microphone privacy toggle matters (*Settings > Privacy > Microphone*); on exit the process is ended with `TerminateProcess` (the Windows counterpart of `_exit`) to skip Foundry's teardown.
 * **Data is unencrypted at rest:** the database is plain SQLite in the app-data directory (`syntari.db`). Encrypting it would need our own SQLCipher connection, because the SQL plugin cannot pass a key. Use FileVault/BitLocker.
 * **Summary quality and speed:** the summary comes from phi-4-mini on-device, so it can miss points or be slow on long meetings. An untitled meeting is labelled with its summary, else its first note. A summary is generated automatically when you stop; continuing a meeting marks it stale, so regenerate it after the new part ends (it is replaced automatically on the next stop).
 * **Continue and AI context:** continuing seeds the note-expansion window with the saved transcript, and notes typed while reviewing an opened meeting are grounded in its last 45 s (stamped at the end of the transcript by default; pick an earlier moment with the *Refers to* menu above the input).
@@ -271,7 +297,7 @@ npm run tauri dev
 | System audio | ScreenCaptureKit (permission prompt) | WASAPI loopback, default output device (no prompt) |
 | Foundry runtime | Downloaded by the SDK at build time; bundled in the app | Downloaded by the SDK at build time; bundled in the installer |
 | Exit workaround | `_exit(0)` | `TerminateProcess` |
-| Status | Primary, tested | Compiles in CI; awaiting hardware test |
+| Status | Primary, tested | Tested on hardware (thanks @askfredbv) |
 
 **Recent changes**
 
