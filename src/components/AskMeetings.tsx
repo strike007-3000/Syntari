@@ -10,7 +10,7 @@ export default function AskMeetings() {
   const [busy, setBusy] = useState(false);
   const [res, setRes] = useState<{ answer: string; sources: Source[] } | null>(null);
   const go = () => {
-    if (!q.trim() || busy) return;
+    if (!q.trim() || busy || !modelsReady || running) return;
     setBusy(true);
     ask(q).then(setRes).catch((e) => setRes({ answer: `Could not answer: ${e}`, sources: [] })).finally(() => setBusy(false));
   };

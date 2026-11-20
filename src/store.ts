@@ -176,6 +176,10 @@ export const useStore = create<State>((set, get) => ({
       if (db && !resume && sessionId !== null) await db.execute("DELETE FROM sessions WHERE id=?", [sessionId]).catch(() => {});
       throw e;
     }
+    if (resume && get().summary) { // new talk makes the old summary stale
+      set({ summaryStale: true });
+      persist((d) => d.execute("UPDATE sessions SET summary_stale=1 WHERE id=?", [sessionId]));
+    }
     insightCursor = resume ? get().transcript.length : 0; // a resumed session seeds the backend with the earlier transcript
     seenInsightTexts.clear();
     if (resume) prevNotes.forEach((n) => seenInsightTexts.add(`${n.kind}:${(n.expanded ?? n.raw).toLowerCase().trim()}`));
@@ -210,6 +214,7 @@ export const useStore = create<State>((set, get) => ({
     const { sessionId, startedAt } = get();
     set({ running: false, durationMs: clockNow(get()) - startedAt, paused: false, pausedAt: null });
     if (sessionId) persist((d) => d.execute("UPDATE sessions SET ended_at=? WHERE id=?", [Date.now(), sessionId]));
+    if (get().transcript.some((c) => !c.excluded)) get().summarize().catch(() => {}); // auto-summary; the button regenerates
     pollInsights(); // the tail since the last poll, where the action items usually are
   },
 
@@ -480,9 +485,10 @@ export const useStore = create<State>((set, get) => ({
     if (!match) return { answer: "Ask about something specific, like a person, a decision or a date.", sources: [] };
     const d = await getDb();
     const from = (kind: "t" | "n") => kind === "t"
-      ? `SELECT s.id AS sid, x.chunk_id AS cid, s.title, s.started_at, x.ts_ms AS ts, x.speaker, x.text AS text FROM fts_transcript f JOIN transcript x ON x.rowid = f.rowid JOIN sessions s ON s.id = x.session_id WHERE fts_transcript MATCH ?1 ORDER BY f.rank LIMIT 6`
-      : `SELECT s.id AS sid, NULL AS cid, s.title, s.started_at, x.ts_ms AS ts, NULL AS speaker, COALESCE(x.expanded, x.raw) AS text FROM fts_notes f JOIN notes x ON x.rowid = f.rowid JOIN sessions s ON s.id = x.session_id WHERE fts_notes MATCH ?1 ORDER BY f.rank LIMIT 3`;
-    const rows = [...(await d.select<any[]>(from("t"), [match])), ...(await d.select<any[]>(from("n"), [match]))];
+      ? `SELECT s.id AS sid, x.chunk_id AS cid, s.title, s.started_at, x.ts_ms AS ts, x.speaker, x.text AS text FROM fts_transcript f JOIN transcript x ON x.rowid = f.rowid JOIN sessions s ON s.id = x.session_id WHERE fts_transcript MATCH ?1 ORDER BY f.rank LIMIT 10`
+      : `SELECT s.id AS sid, NULL AS cid, s.title, s.started_at, x.ts_ms AS ts, NULL AS speaker, COALESCE(x.expanded, x.raw) AS text FROM fts_notes f JOIN notes x ON x.rowid = f.rowid JOIN sessions s ON s.id = x.session_id WHERE fts_notes MATCH ?1 ORDER BY f.rank LIMIT 5`;
+    const summaries = `SELECT s.id AS sid, NULL AS cid, s.title, s.started_at, 0 AS ts, NULL AS speaker, s.summary AS text FROM fts_summary f JOIN sessions s ON s.rowid = f.rowid WHERE fts_summary MATCH ?1 ORDER BY f.rank LIMIT 2`;
+    const rows = [...(await d.select<any[]>(from("t"), [match])), ...(await d.select<any[]>(from("n"), [match])), ...(await d.select<any[]>(summaries, [match]))];
     const sources: Source[] = rows.map((r, i) => ({ n: i + 1, sessionId: r.sid, chunkId: r.cid ?? undefined, title: r.title ?? "", startedAt: r.started_at, ts: r.ts, speaker: r.speaker ?? undefined, text: String(r.text).slice(0, 500) }));
     if (!sources.length) return { answer: "I found nothing about that in your meetings.", sources };
     const when = (s: Source) => `${s.title || new Date(s.startedAt).toLocaleDateString()} at ${fmtClock(s.ts)}${s.speaker ? `, ${s.speaker}` : ""}`;
@@ -492,7 +498,10 @@ export const useStore = create<State>((set, get) => ({
 
   async openSource(s) {
     await get().loadSession(s.sessionId);
-    if (s.chunkId !== undefined) set({ focusChunk: s.chunkId });
+    if (s.chunkId !== undefined) return set({ focusChunk: s.chunkId });
+    // a note or summary: focus the transcript line nearest its moment
+    const near = get().transcript.reduce<TranscriptChunk | undefined>((b, c) => (!b || Math.abs(c.ts - s.ts) < Math.abs(b.ts - s.ts) ? c : b), undefined);
+    set({ focusChunk: near?.id ?? null });
   },
 
   async backup() {
