@@ -467,6 +467,16 @@ impl FoundryEngine {
     }
 
     /// Summarize a whole transcript. Long transcripts are summarized in segments, then merged.
+    /// Answers a question from numbered passages of past meetings, citing them as [n].
+    pub async fn answer(&self, question: &str, passages: &[(usize, String)]) -> Result<String, String> {
+        let sys = "You answer questions about the user's past meetings using ONLY the numbered passages given. \
+            Cite the passage number in square brackets after each claim, like [2]. If the passages do not answer the \
+            question, say you could not find it in the meetings. Never add facts that are not in the passages.";
+        let body: String = passages.iter().map(|(n, t)| format!("[{n}] {t}\n")).collect();
+        let user = format!("PASSAGES:\n{body}\nQUESTION: {question}\nANSWER:");
+        self.complete_checked(sys, &user, || "I could not write an answer this time. The sources below are the closest passages.".into()).await
+    }
+
     pub async fn summarize(&self, chunks: &[TranscriptChunk], on_part: impl Fn(usize, usize)) -> Result<String, String> {
         if chunks.is_empty() {
             return Err("Transcript is empty".into());

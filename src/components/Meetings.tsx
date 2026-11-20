@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import AskMeetings from "./AskMeetings";
 import { useStore, MeetingRow } from "../store";
 
 const dayLabel = (ms: number) => {
@@ -41,6 +42,7 @@ export default function Meetings() {
         {modelMsg && <span className="rounded-full border border-amber-500/30 bg-amber-500/15 px-2.5 py-0.5 text-xs text-amber-400">{modelMsg}</span>}
         <button onClick={() => afterSave(newMeeting)} disabled={running} className="rounded-md bg-accent px-4 py-1.5 text-sm font-semibold text-ink-950 disabled:opacity-50">New meeting</button>
       </div>
+      <AskMeetings />
       {totalMb > 0 && (
         <div className="mb-3 flex items-center gap-3 text-xs text-slate-400">
           Saved audio: {totalMb.toFixed(0)} MB

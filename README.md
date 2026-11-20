@@ -136,9 +136,11 @@ syntari/
 │   │   ├── RecordingControls.tsx      # Save audio switch, microphone picker, silence auto-stop banner, Re-transcribe / Delete audio
 │   │   ├── ShorthandPad.tsx           # Scratchpad input, dynamic timestamp sync
 │   │   ├── NotesDashboard.tsx         # Notes / Summary / Markdown tabs; per-note edit (double-click) and delete
+│   │   ├── AskMeetings.tsx            # Ask box on the Meetings page: answer with clickable [n] sources
 │   │   ├── Meetings.tsx               # Meetings home: day-grouped history, search, Open / Rename / Continue / Delete, saved-audio sizes, Recover from audio
 │   │   └── TranscriptDrawer.tsx       # Live dual-track transcript viewer
 │   ├── store.ts                       # Zustand state, SQLite persistence, session history, delete, backup, DB-error state
+│   ├── ask.ts / ask.test.ts           # Question to FTS5 query (stop words, quoting) and the Source type
 │   ├── store.test.ts                  # Insight-poll binding and pause/resume clock tests
 │   ├── types.ts                       # Domain types & shorthand parser
 │   └── types.test.ts                  # Shorthand parser unit tests
@@ -158,7 +160,7 @@ syntari/
 │   │   │   └── loopback_windows.rs    # WASAPI loopback via cpal (Windows)
 │   │   ├── lib.rs                     # Tauri IPC commands (session, pause, recordings, microphones, export), SQL plugin + migrations, log file, startup temp-file cleanup
 │   │   └── main.rs                    # Application entry point
-│   ├── migrations/                    # 001_init.sql (sessions, notes, transcript); 002_summary.sql (summary, auto flag); 003_title.sql (meeting title); 004_citation_start.sql (citation timestamp)
+│   ├── migrations/                    # 001_init.sql (sessions, notes, transcript); 002_summary.sql (summary, auto flag); 003_title.sql (meeting title); 004_citation_start.sql (citation timestamp); 005_transcript_excluded.sql; 006_summary_stale.sql; 007_search_index.sql (FTS5 indexes over transcript lines and notes, kept current by triggers)
 │   ├── Info.plist                     # macOS usage descriptions (microphone, screen/system audio)
 │   ├── capabilities/default.json      # Tauri permission set for the main window
 │   ├── tauri.conf.json                # Tauri v2 bundle, CSP, and window config
@@ -195,6 +197,7 @@ Models are not bundled or committed. On first launch Syntari downloads whisper-s
 
 ### Using the App
 
+* **Ask across meetings:** the box at the top of the Meetings list answers a question from everything you have recorded. It finds matching transcript lines and notes with a local full-text index (word stems, ranked), gives the best nine to the on-device model, and shows the answer with numbered sources. Click a `[n]` or a source line to open that meeting at that moment. It needs the models loaded and no session running. If nothing matches it says so without calling the model.
 * **Meetings:** the app opens on a Meetings list grouped by day, with search across titles, summaries, notes and transcripts. *New meeting* opens a blank session; *Open* views a past meeting; *Continue* resumes it in place (new audio, notes and transcript are appended and the timer carries on).
 * **Start / Stop** a session from the header (*Continue* on a reopened meeting); the left pad takes your notes, the middle panel structures them, the right drawer shows the live transcript. *← Meetings* returns to the list when no session is running.
 * **AI suggestions:** every 30 s the local model proposes decisions, actions, risks and discussion points from the transcript. They appear only in the Notes panel (amber) until you **Accept** or **Dismiss** them; an unaccepted suggestion is held in memory only (not saved, not exported).
@@ -237,19 +240,20 @@ npm run tauri dev
 * **Silence gap fill:** when the system track delivers nothing (WASAPI sends nothing while nothing plays) it is padded with silence once it falls 500 ms behind the wall clock, keeping 100 ms of slack, so transcript and note times stay aligned. If audio arrives very late a little extra silence can slip in.
 * **Whisper's invented lines:** a chunk that is only a stock phrase ("thank you", "thanks for watching", "bye", and similar) is discarded when the audio is faint (RMS under 0.02); the same words spoken clearly are kept. There is no language lock: the Foundry audio API has no language parameter.
 * **Saved audio and recovery:** recording is uncompressed PCM (Opus would need an encoder dependency). Recovery is offered automatically only for meetings with no recorded end; for one that ended normally, open it and use *Re-transcribe*. Re-transcribing runs the same ducking, echo cancellation and echo drop as live capture but cannot reproduce the exact live result. Saved audio is not part of *Back up DB*.
+* **Ask across meetings:** retrieval is keyword-based (FTS5 with word stemming), so a question that shares no words with the meeting (a paraphrase) finds nothing; phrase it with the words people used. Only the top ten transcript lines, five notes and two summaries reach the model, so broad questions ("summarise everything about X") get partial answers. phi-4-mini can still misstate a passage: check the cited source. Never run `VACUUM` on the live database in place: the index is keyed by row id, which an in-place vacuum can renumber (*Back up DB* uses `VACUUM INTO` and is safe).
 * **Exit behaviour:** Foundry's native runtime aborts in a C++ destructor on normal process exit (macOS "quit unexpectedly" dialog). Syntari stops the session and then exits with `_exit(0)` (macOS/Linux) or `TerminateProcess` (Windows) to skip it.
 * **Foundry runtime is closed source:** it may make its own telemetry/metadata requests; verify with `scripts/check-egress.sh` or a network monitor.
 * **Foundry licensing (reviewed, not legal advice):** the `foundry-local-sdk` crate and the `Microsoft.AI.Foundry.Local.Runtime` NuGet package (the native `foundry_local` library plus ONNX Runtime / GenAI, which the build downloads for Windows and macOS) are **MIT**, so bundling them in an installer is permitted if you ship the MIT notice and `ThirdPartyNotices` from the package. The **Foundry Local CLI** installed via `brew`/`winget` is under separate Microsoft terms that forbid combining it with your application for others to use, so do not redistribute the CLI or its `libfoundry_local.dylib`. Model weights are fetched from the Foundry catalog at first run, not bundled; whisper-small and phi-4-mini are MIT-licensed upstream, but confirm the catalog entries' terms before bundling weights. The macOS build uses the same SDK-downloaded runtime as Windows (no Homebrew copy).
 * **Classification accuracy:** phi-4-mini is a small model; ambiguous or tentative notes may be mis-filed. Use the *Move to* menu.
 * **Windows is new and untested on hardware:** it compiles in CI but needs a real run. Differences from macOS: system audio uses WASAPI loopback on the default output device (no permission prompt; capture follows the device's mix format, usually 48 kHz stereo); only the microphone privacy toggle matters (*Settings > Privacy > Microphone*); on exit the process is ended with `TerminateProcess` (the Windows counterpart of `_exit`) to skip Foundry's teardown, so confirm there is no crash dialog on quit.
 * **Data is unencrypted at rest:** the database is plain SQLite in the app-data directory (`syntari.db`). Encrypting it would need our own SQLCipher connection, because the SQL plugin cannot pass a key. Use FileVault/BitLocker.
-* **Summary quality and speed:** the summary comes from phi-4-mini on-device, so it can miss points or be slow on long meetings. An untitled meeting is labelled with its summary, else its first note. Regenerate after continuing a meeting, since the old summary is not updated automatically.
+* **Summary quality and speed:** the summary comes from phi-4-mini on-device, so it can miss points or be slow on long meetings. An untitled meeting is labelled with its summary, else its first note. A summary is generated automatically when you stop; continuing a meeting marks it stale, so regenerate it after the new part ends (it is replaced automatically on the next stop).
 * **Continue and AI context:** continuing seeds the note-expansion window with the saved transcript, and notes typed while reviewing an opened meeting are grounded in its last 45 s (stamped at the end of the transcript by default; pick an earlier moment with the *Refers to* menu above the input).
 * **Expansion quality:** phi-4-mini sometimes returns a vague sentence, picks a wrong category, or inherits a transcription error (e.g. Whisper hearing "FY26" as "F526"). Use `dec:`, `act:` or `risk:` to force the category, double-click to correct text. Each inference prints the raw model reply to the log.
 * **Old accepted suggestions:** notes accepted from AI suggestions before migration 002 have no AI flag, so they show in the left pad when reloaded.
 * **Deleting is permanent:** *Delete* on a meeting removes its notes and transcript; the ✕ on a note removes just that note. Both ask for confirmation, and neither can be undone (use *Back up DB* first if unsure). Delete is disabled while recording.
 * **Save failures are shown:** if a database write fails, a red banner appears in the header (click to dismiss) and capture continues; export the notes with *Export .md* or *Copy Markdown* right away.
-* **Summary needs a stopped session:** *Generate summary* is disabled while recording or when the transcript is empty, and a summary is not produced automatically.
+* **Summary needs a stopped session:** *Generate summary* is disabled while recording or when the transcript is empty. Stopping generates one automatically.
 * **Unsigned builds (no paid certificates):** macOS: right-click the app > *Open*, or run `xattr -dr com.apple.quarantine /Applications/Syntari.app`. Windows: SmartScreen > *More info* > *Run anyway*.
 * **Logs & backup:** release builds write `syntari.log` (the *Logs* button opens the log folder; the file can contain note and transcript-derived text, so skim before sharing, and it is reset at launch once over 5 MB; dev builds log to the terminal). *Back up DB* saves a copy of the meetings database to Downloads. The header shows the app version; compare it with the latest GitHub Release to see if you are current (no auto-updater).
 * **Microphone denied:** if Start fails because the mic is unavailable, a prompt offers to open the OS microphone privacy page. System-audio denial on macOS shows the amber header banner.
@@ -271,6 +275,7 @@ npm run tauri dev
 
 **Recent changes**
 
+* **Ask across meetings:** question box on the Meetings page with cited, clickable sources; migration 007 adds FTS5 indexes.
 * **Recording robustness:** opt-in crash-safe *Save audio* with *Re-transcribe*, *Recover from audio* and storage controls; pause/resume; microphone picker and device-change rebuild; 5-minute silence auto-stop; echo-line drop gated by loudness correlation; silence gap fill on the system track; stock-phrase filter; *Export .md* includes the transcript; stop now transcribes the final 0.5 s.
 * **Editing and startup:** double-click a note to edit it, *Rename* a meeting (new `sessions.title` column, migration 003); *Continue* and review-mode notes now get transcript context; the model integrity check skips re-hashing files whose size and mtime are unchanged; expansion prompt reworked (examples, case-insensitive reply parsing, facts are discussion not decisions); failed notes show *Failed* and unchanged ones *Filed*; transparent app icons; header no longer overlaps on narrow windows.
 * **Beta readiness:** macOS now bundles the MIT Foundry runtime like Windows (no Homebrew) and has its own `macos` workflow; the SQLCipher/OpenSSL build dependency is gone (no Perl/NASM needed); real app icons; database-error banner; disk-space check, stale temp-file cleanup and a "Verifying local models…" status; delete meetings and notes; *Back up DB*, a log file and *Logs* button; version in the header; microphone-denied prompt; i16/u16/i32 mic support.
@@ -301,6 +306,7 @@ CI (`.github/workflows/windows.yml`) runs `tsc`, `vitest`, the frontend build, `
    * Speaker bleed: play audio through speakers while silent; no "You" lines should appear. Otherwise copy the `[Bleed] mic residual RMS` lines from the log and tune `BLEED_RMS` in `audio/mod.rs`.
    * Try a USB headset whose default format is 16-bit (handled by the I16/U16 conversion in `audio/mod.rs`).
    * Quit the app: note whether a crash dialog appears.
+   * Ask: record two short meetings mentioning a price and a name, then ask "what was the price?" from the Meetings page; the answer should cite a source, and clicking it should open that meeting at that line. Ask about something never said and check it answers that it found nothing.
    * Pause: *Pause*, wait a minute, *Resume*; the timer and note times must skip the pause, and speech just before pausing must still appear.
    * Save audio: tick it, record, then kill the app mid-meeting. On the Meetings list the meeting should show *Recover from audio*; run it and check the transcript fills in. Also try *Delete audio older than 30 days* and the size shown per row.
    * Microphone: pick a USB mic in the dropdown, start, unplug it; recording should continue on the default mic (log line `[Audio] default microphone changed`).
