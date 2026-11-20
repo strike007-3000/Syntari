@@ -73,3 +73,8 @@ jobs:
           # the windows workflow publishes to the same tag, so tolerate losing the create race
           gh release create "$TAG" "$dmg" --prerelease --target "${{ github.sha }}" --title "$TAG" --notes "Unsigned test build from ${{ github.ref_name }} @ ${{ github.sha }}. Gatekeeper: right-click > Open, or run xattr -dr com.apple.quarantine /Applications/Syntari.app" \
             || gh release upload "$TAG" "$dmg" --clobber
+          # stable asset on a fixed tag so the Homebrew cask always installs the newest build
+          cp "$dmg" Syntari-macos.dmg
+          gh release view macos-latest >/dev/null 2>&1 \
+            || gh release create macos-latest --prerelease --target "${{ github.sha }}" --title "macos-latest" --notes "Always the newest macOS build; used by the Homebrew cask."
+          gh release upload macos-latest Syntari-macos.dmg --clobber
