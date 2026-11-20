@@ -15,5 +15,6 @@ export interface Source {
   startedAt: number;
   ts: number;
   speaker?: string;
+  summary?: boolean; // from the meeting's summary, not a timestamped line
   text: string;
 }

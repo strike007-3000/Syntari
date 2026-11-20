@@ -42,7 +42,7 @@ export default function AskMeetings() {
               {res.sources.map((s) => (
                 <li key={s.n}>
                   <button onClick={() => open(s)} className="text-left hover:text-slate-200">
-                    <span className="font-mono text-accent">[{s.n}]</span> {s.title || new Date(s.startedAt).toLocaleDateString()} · {fmtClock(s.ts)}{s.speaker ? ` · ${s.speaker}` : ""}: {s.text.slice(0, 140)}{s.text.length > 140 ? "…" : ""}
+                    <span className="font-mono text-accent">[{s.n}]</span> {s.title || new Date(s.startedAt).toLocaleDateString()} · {s.summary ? "summary" : fmtClock(s.ts)}{s.speaker ? ` · ${s.speaker}` : ""}: {s.text.slice(0, 140)}{s.text.length > 140 ? "…" : ""}
                   </button>
                 </li>
               ))}
