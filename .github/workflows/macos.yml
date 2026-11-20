@@ -33,11 +33,12 @@ jobs:
           lib=$(find src-tauri/target -name libfoundry_local.dylib | head -n1)
           [ -n "$lib" ] || { echo "libfoundry_local.dylib not found in build output"; exit 1; }
           # ad-hoc signing ("-") is required for arm64 binaries to launch; there is no paid Developer ID
+          # hardenedRuntime off: its library validation rejects Microsoft-signed foundry dylibs loaded by an ad-hoc app (different Team IDs)
           files='{}'
           for f in "$(dirname "$lib")"/*.dylib; do
             files=$(echo "$files" | jq --arg f "$(realpath "$f")" --arg n "MacOS/$(basename "$f")" '. + {($n): $f}')
           done
-          echo "$files" | jq '{bundle: {targets: ["app", "dmg"], resources: {"licenses/*": "licenses/"}, macOS: {signingIdentity: "-", files: .}}}' > src-tauri/tauri.macos-bundle.conf.json
+          echo "$files" | jq '{bundle: {targets: ["app", "dmg"], resources: {"licenses/*": "licenses/"}, macOS: {signingIdentity: "-", hardenedRuntime: false, files: .}}}' > src-tauri/tauri.macos-bundle.conf.json
           cat src-tauri/tauri.macos-bundle.conf.json
       - if: env.FOUNDRY_LOCAL_RUNTIME_VERSION != ''
         run: npm run tauri build -- --config src-tauri/tauri.macos-bundle.conf.json
@@ -47,6 +48,7 @@ jobs:
           ls src-tauri/target/release/bundle/macos/Syntari.app/Contents/MacOS
           test -f src-tauri/target/release/bundle/macos/Syntari.app/Contents/MacOS/libfoundry_local.dylib
           codesign --verify --deep src-tauri/target/release/bundle/macos/Syntari.app
+          if codesign -dvv src-tauri/target/release/bundle/macos/Syntari.app 2>&1 | grep -q 'flags=.*runtime'; then echo 'hardened runtime still on'; exit 1; fi
       - if: env.FOUNDRY_LOCAL_RUNTIME_VERSION != ''
         uses: actions/upload-artifact@v4
         with:
