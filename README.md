@@ -1,6 +1,6 @@
 # Syntari: Private On-Device Meeting Synthesizer
 
-Syntari is a privacy-first, on-device desktop meeting synthesizer and contextual shorthand expander designed for software architects, engineering leads, and technical executives. Built on Tauri v2, React, and Foundry Local ONNX models, Syntari converts brief shorthand keystrokes into grounded, structured meeting records in real time and, on demand, a full summary of the transcript—with no telemetry of its own. After a one-time model download it runs fully offline; no audio, transcripts or notes ever leave your device.
+Syntari is a privacy-first, on-device desktop meeting synthesizer and contextual shorthand expander designed for software architects, engineering leads, and technical executives. Built on Tauri v2, React, and Foundry Local ONNX models, Syntari converts brief shorthand keystrokes into grounded, structured meeting records in real time and a full summary of the transcript—with no telemetry of its own. After a one-time model download it runs fully offline; no audio, transcripts or notes ever leave your device.
 
 
 ### About the name
@@ -35,7 +35,7 @@ Syntari pairs human intentionality with local AI:
 2. **The System Captures Context:** Syntari records audio continuously in volatile RAM buffers and transcribes it live. An opt-in *Save audio* switch also writes raw audio to the app data folder (see Audio Forensics), so a crash loses almost nothing and a meeting can be transcribed again.
 3. **The Local AI Expands Factually:** Using a focused lookback slice ($[T - 45\text{s}, T + 10\text{s}]$ relative to keystroke time), an on-device language model enriches the shorthand note with the exact dialogue spoken in that window.
 4. **Zero-Hallucination Fallback:** If the shorthand topic was not explicitly discussed in the audio slice, the model is prompted to keep the user's raw note rather than fabricate details (a prompt rule, not a guarantee; small models can still err).
-5. **Summary on Demand:** After you stop, *Generate summary* produces an overview, key points, decisions and action items from the whole transcript. It is never generated automatically.
+5. **Summary on Demand:** After you stop, *Generate summary* (also run once automatically on stop) produces an overview, key points, decisions and action items from the whole transcript. It is also generated automatically when you stop; regenerate any time.
 
 ---
 
@@ -129,54 +129,13 @@ See also the [Privacy Policy](PRIVACY.md).
 
 ## 6. Project Structure
 
-```text
-syntari/
-├── src/                               # Frontend (React + TypeScript)
-│   ├── App.tsx                        # Screen switcher (Meetings / session); event and level listeners
-│   ├── components/
-│   │   ├── Header.tsx                 # Timer, version, privacy badge, model/DB-error banners, meters, Pause / Stop, Export / Back up DB / Logs
-│   │   ├── RecordingControls.tsx      # Save audio switch, microphone picker, silence auto-stop banner, Re-transcribe / Delete audio
-│   │   ├── ShorthandPad.tsx           # Scratchpad input, dynamic timestamp sync
-│   │   ├── NotesDashboard.tsx         # Notes / Summary / Markdown tabs; per-note edit (double-click) and delete
-│   │   ├── AskMeetings.tsx            # Ask box on the Meetings page: answer with clickable [n] sources
-│   │   ├── Meetings.tsx               # Meetings home: day-grouped history, search, Open / Rename / Continue / Delete, saved-audio sizes, Recover from audio
-│   │   └── TranscriptDrawer.tsx       # Live dual-track transcript viewer
-│   ├── store.ts                       # Zustand state, SQLite persistence, session history, delete, backup, DB-error state
-│   ├── ask.ts / ask.test.ts           # Question to FTS5 query (stop words, quoting) and the Source type
-│   ├── store.test.ts                  # Insight-poll binding and pause/resume clock tests
-│   ├── types.ts                       # Domain types & shorthand parser
-│   └── types.test.ts                  # Shorthand parser unit tests
-├── src-tauri/                         # Backend (Rust)
-│   ├── src/
-│   │   ├── ai/
-│   │   │   ├── engine.rs              # Foundry Local SDK: model download (disk-space check)/verify/load, STT, expansion, insights, summary
-│   │   │   └── mod.rs                 # Lookback/lookahead window math (+ tests)
-│   │   ├── audio/
-│   │   │   ├── mod.rs                 # Audio pipeline coordinator & ring buffers; i16/u16/i32/f32 input conversion; bleed threshold
-│   │   │   ├── dsp.rs                 # Resampling, NLMS filter, frame ducking, silence-gap padding, loudness-envelope correlation (+ tests)
-│   │   │   ├── echo.rs                # Drops mic lines that copy the remote side, gated by audio leak evidence (+ tests)
-│   │   │   ├── pause.rs               # Pause flag and paused-time clock shared by the capture callbacks and the drain loop (+ tests)
-│   │   │   ├── recording.rs           # Opt-in PCM recording, listing, and re-transcription of saved audio (+ tests)
-│   │   │   ├── macos_sc_tap.rs        # Native ScreenCaptureKit loopback tap (macOS)
-│   │   │   ├── loopback_macos.rs      # Virtual-device fallback (macOS)
-│   │   │   └── loopback_windows.rs    # WASAPI loopback via cpal (Windows)
-│   │   ├── lib.rs                     # Tauri IPC commands (session, pause, recordings, microphones, export), SQL plugin + migrations, log file, startup temp-file cleanup
-│   │   └── main.rs                    # Application entry point
-│   ├── migrations/                    # 001_init.sql (sessions, notes, transcript); 002_summary.sql (summary, auto flag); 003_title.sql (meeting title); 004_citation_start.sql (citation timestamp); 005_transcript_excluded.sql; 006_summary_stale.sql; 007_search_index.sql (FTS5 indexes over transcript lines and notes, kept current by triggers)
-│   ├── Info.plist                     # macOS usage descriptions (microphone, screen/system audio)
-│   ├── capabilities/default.json      # Tauri permission set for the main window
-│   ├── tauri.conf.json                # Tauri v2 bundle, CSP, and window config
-│   ├── tauri.windows-bundle.conf.json # Extra resources for the Windows installer (runtime DLLs, notices)
-│   │                                  # (tauri.macos-bundle.conf.json is generated by the macos workflow, not committed)
-│   ├── licenses/                      # MIT license + third-party notices for the bundled Foundry runtime
-│   ├── icons/                         # App icons generated from source.svg (`npm run tauri icon <1024px.png>`)
-│   └── Cargo.toml                     # Rust dependencies & platform targets
-├── .github/workflows/windows.yml      # Windows CI: tsc, vitest, frontend build, cargo check/test; installer build + pre-release on manual run or v* tag
-├── .github/workflows/macos.yml        # macOS CI: same checks; ad-hoc-signed .app/.dmg with the Foundry dylibs, pre-release on manual run or v* tag
-└── scripts/check-egress.sh            # Lists the running app's network sockets
+* `src/`: React + TypeScript frontend. `App.tsx` switches between the Meetings list and a session; `components/` holds the UI (Header, ShorthandPad, NotesDashboard, TranscriptDrawer, Meetings, AskMeetings, RecordingControls); `store.ts` is the Zustand state plus SQLite persistence; `types.ts` has the domain types and shorthand parser; `ask.ts` turns a question into an FTS5 query. Tests sit beside the code (`*.test.ts`).
+* `src-tauri/src/`: Rust backend. `lib.rs` has the Tauri commands, SQL plugin and migrations; `ai/` wraps Foundry Local (model download/verify/load, speech-to-text, expansion, insights, summary); `audio/` has the capture pipeline, DSP (resampler, NLMS echo canceller, ducking), echo-line drop, pause clock, opt-in recording, and the per-OS loopback (`macos_sc_tap.rs`, `loopback_macos.rs`, `loopback_windows.rs`).
+* `src-tauri/migrations/`: SQLite schema, `001`-`008` (sessions, notes, transcript, summary, title, citations, FTS5 search indexes).
+* `src-tauri/`: `tauri.conf.json` (bundle, CSP, window), `Info.plist` (macOS mic and screen-audio usage text), `tauri.windows-bundle.conf.json` (Windows installer resources; the macOS one is generated by CI), `capabilities/`, `licenses/` (bundled Foundry runtime notices), `icons/`.
+* `.github/workflows/`: `windows.yml` and `macos.yml` (CI and release builds). `Casks/` and `bucket/`: Homebrew cask and Scoop manifest. `scripts/check-egress.sh`: lists the running app's network sockets.
 
 Models are NOT in the repo or the bundle; they live in the app data dir (see Models).
-```
 
 ---
 
@@ -223,7 +182,7 @@ Models are not bundled or committed. On first launch Syntari downloads whisper-s
 
 ### Using the App
 
-* **Ask across meetings:** the box at the top of the Meetings list answers a question from everything you have recorded. It finds matching transcript lines and notes with a local full-text index (word stems, ranked), gives the best nine to the on-device model, and shows the answer with numbered sources. Click a `[n]` or a source line to open that meeting at that moment. It needs the models loaded and no session running. If nothing matches it says so without calling the model.
+* **Ask across meetings:** the box at the top of the Meetings list answers a question from everything you have recorded. It finds matching transcript lines, notes and summaries with a local full-text index (word stems, ranked), gives the best nine to the on-device model, and shows the answer with numbered sources. Click a `[n]` or a source line to open that meeting at that moment. It needs the models loaded and no session running. If nothing matches it says so without calling the model.
 * **Meetings:** the app opens on a Meetings list grouped by day, with search across titles, summaries, notes and transcripts. *New meeting* opens a blank session; *Open* views a past meeting; *Continue* resumes it in place (new audio, notes and transcript are appended and the timer carries on).
 * **Start / Stop** a session from the header (*Continue* on a reopened meeting); the left pad takes your notes, the middle panel structures them, the right drawer shows the live transcript. *← Meetings* returns to the list when no session is running.
 * **AI suggestions:** every 30 s the local model proposes decisions, actions, risks and discussion points from the transcript. They appear only in the Notes panel (amber) until you **Accept** or **Dismiss** them; an unaccepted suggestion is held in memory only (not saved, not exported).
@@ -271,7 +230,7 @@ npm run tauri dev
 * **Foundry runtime is closed source:** it may make its own telemetry/metadata requests; verify with `scripts/check-egress.sh` or a network monitor.
 * **Foundry licensing (reviewed, not legal advice):** the `foundry-local-sdk` crate and the `Microsoft.AI.Foundry.Local.Runtime` NuGet package (the native `foundry_local` library plus ONNX Runtime / GenAI, which the build downloads for Windows and macOS) are **MIT**, so bundling them in an installer is permitted if you ship the MIT notice and `ThirdPartyNotices` from the package. The **Foundry Local CLI** installed via `brew`/`winget` is under separate Microsoft terms that forbid combining it with your application for others to use, so do not redistribute the CLI or its `libfoundry_local.dylib`. Model weights are fetched from the Foundry catalog at first run, not bundled; whisper-small and phi-4-mini are MIT-licensed upstream, but confirm the catalog entries' terms before bundling weights. The macOS build uses the same SDK-downloaded runtime as Windows (no Homebrew copy).
 * **Classification accuracy:** phi-4-mini is a small model; ambiguous or tentative notes may be mis-filed. Use the *Move to* menu.
-* **Windows differences from macOS** (tested on real hardware by [@askfredbv](https://github.com/askfredbv)): system audio uses WASAPI loopback on the default output device (no permission prompt; capture follows the device's mix format, usually 48 kHz stereo); only the microphone privacy toggle matters (*Settings > Privacy > Microphone*); on exit the process is ended with `TerminateProcess` (the Windows counterpart of `_exit`) to skip Foundry's teardown.
+* **Platform differences:** *macOS* (Apple Silicon, macOS 13+): system audio uses ScreenCaptureKit and needs the Screen & System Audio Recording permission plus microphone access (*System Settings > Privacy & Security*); builds are ad-hoc signed with the hardened runtime off, because library validation rejects Microsoft-signed Foundry dylibs in an ad-hoc app; exit uses `_exit(0)`. *Windows* (tested on real hardware by [@askfredbv](https://github.com/askfredbv)): system audio uses WASAPI loopback on the default output device (no permission prompt; follows the device's mix format, usually 48 kHz stereo); only the microphone privacy toggle matters (*Settings > Privacy > Microphone*); exit uses `TerminateProcess`.
 * **Data is unencrypted at rest:** the database is plain SQLite in the app-data directory (`syntari.db`). Encrypting it would need our own SQLCipher connection, because the SQL plugin cannot pass a key. Use FileVault/BitLocker.
 * **Summary quality and speed:** the summary comes from phi-4-mini on-device, so it can miss points or be slow on long meetings. An untitled meeting is labelled with its summary, else its first note. A summary is generated automatically when you stop; continuing a meeting marks it stale, so regenerate it after the new part ends (it is replaced automatically on the next stop).
 * **Continue and AI context:** continuing seeds the note-expansion window with the saved transcript, and notes typed while reviewing an opened meeting are grounded in its last 45 s (stamped at the end of the transcript by default; pick an earlier moment with the *Refers to* menu above the input).
@@ -297,6 +256,8 @@ npm run tauri dev
 | System audio | ScreenCaptureKit (permission prompt) | WASAPI loopback, default output device (no prompt) |
 | Foundry runtime | Downloaded by the SDK at build time; bundled in the app | Downloaded by the SDK at build time; bundled in the installer |
 | Exit workaround | `_exit(0)` | `TerminateProcess` |
+| Install | Homebrew cask or `.dmg` (Apple Silicon, macOS 13+) | Scoop or `.exe` (x64/ARM64, Windows 11) |
+| Signing | Ad-hoc, not notarized; hardened runtime off | Unsigned (SmartScreen warning) |
 | Status | Primary, tested | Tested on hardware (thanks @askfredbv) |
 
 **Recent changes**
@@ -314,21 +275,21 @@ npm run tauri dev
 
 ---
 
-## 10. Testing on Windows
+## 10. Testing
 
-CI (`.github/workflows/windows.yml`) runs `tsc`, `vitest`, the frontend build, `cargo check` and `cargo test` on `windows-latest` for pushes to `main` and every PR. Running it manually (*Actions > windows > Run workflow*) or pushing a `v*` tag also builds the installer, checks it contains `foundry_local.dll`, smoke-tests a silent install, attaches it as the `syntari-windows` artifact and publishes a pre-release.
+CI runs `tsc`, `vitest`, the frontend build, `cargo check` and `cargo test` on `macos-15` (`macos.yml`) and `windows-latest` (`windows.yml`) for pushes to `main` and every PR. Running a workflow manually (*Actions > Run workflow*) or pushing a `v*` tag also builds the installer, verifies it contains the Foundry runtime, uploads it as an artifact (`syntari-macos` / `syntari-windows`) and publishes a pre-release (Windows also smoke-tests a silent install).
 
 **Tester steps (from source):**
 
-1. Install the Windows prerequisites in section 7, then `git clone` the repo and `git checkout main`.
-2. In PowerShell set `$env:FOUNDRY_LOCAL_RUNTIME_VERSION="2.3.1"`, then `npm install` and `npm run tauri dev`. The first Rust build is long (Foundry runtime download).
+1. Install the prerequisites for your OS (section 7), then `git clone` the repo and `git checkout main`.
+2. Set `FOUNDRY_LOCAL_RUNTIME_VERSION=2.3.1` (macOS: `export`; PowerShell: `$env:FOUNDRY_LOCAL_RUNTIME_VERSION="2.3.1"`), then `npm install` and `npm run tauri dev`. The first Rust build is long (Foundry runtime download).
 3. Wait for the ~4 GB model download (header status pill) before starting a session.
 4. Run this checklist and report pass/fail with the console output:
-   * Mic only: *Start*, speak, transcript appears as "You".
-   * System audio: play a YouTube video through speakers/headphones; remote speech appears in the transcript. Try a different default output device and Bluetooth headphones.
+   * Mic only: *Start*, speak, transcript appears as "You". On first run the OS asks for microphone access (macOS) or the privacy toggle must be on (Windows).
+   * System audio: play a YouTube video through speakers/headphones; remote speech appears in the transcript. macOS asks for Screen & System Audio Recording permission (the amber header banner shows if denied). Windows needs no prompt; try a different default output device and Bluetooth headphones.
    * Notes: type shorthand (e.g. `act:`), check classification and AI suggestions; double-click a note to edit it and *Rename* a meeting.
    * Stop, click *Generate summary*, go to *← Meetings*, open the session, and restart the app to confirm it persists; try *Continue* on it.
-   * *Export .md* writes to `%USERPROFILE%\Downloads` and Explorer opens with the file selected.
+   * *Export .md* writes to your `Downloads` folder (`%USERPROFILE%\Downloads` on Windows) and Finder / Explorer opens with the file selected.
    * Speaker bleed: play audio through speakers while silent; no "You" lines should appear. Otherwise copy the `[Bleed] mic residual RMS` lines from the log and tune `BLEED_RMS` in `audio/mod.rs`.
    * Try a USB headset whose default format is 16-bit (handled by the I16/U16 conversion in `audio/mod.rs`).
    * Quit the app: note whether a crash dialog appears.
@@ -338,10 +299,10 @@ CI (`.github/workflows/windows.yml`) runs `tsc`, `vitest`, the frontend build, `
    * Microphone: pick a USB mic in the dropdown, start, unplug it; recording should continue on the default mic (log line `[Audio] default microphone changed`).
    * Silence: record 5 minutes of quiet; the banner should appear, then the meeting stops a minute later.
    * Echo on speakers: play a talk through the speakers with the mic on; the transcript should not repeat the speech as "You" (check the `[Echo]` log lines).
-   * With a mic privacy toggle off, the *open settings* hint opens the Windows Microphone privacy page.
-5. Optional: capture network connections during use (Resource Monitor or Wireshark) to confirm the only traffic is the model download.
+   * With microphone access denied, the *open settings* hint opens the OS microphone privacy page.
+5. Optional: capture network connections during use (`scripts/check-egress.sh` on macOS; Resource Monitor or Wireshark on Windows) to confirm the only traffic is the model download.
 
-**Tester steps (from CI artifact):** download `syntari-windows` from the workflow run and install the `.exe`. Unsigned, so SmartScreen will warn (*More info > Run anyway*).
+**Tester steps (from a build):** install the `.dmg` (macOS, Apple Silicon) or `.exe` (Windows) from the workflow artifact or a Release. Builds are unsigned: on macOS right-click the app > *Open* (or `xattr -dr com.apple.quarantine /Applications/Syntari.app`); on Windows SmartScreen > *More info > Run anyway*.
 
 ---
 
