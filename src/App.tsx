@@ -8,6 +8,7 @@ import ShorthandPad from "./components/ShorthandPad";
 import NotesDashboard from "./components/NotesDashboard";
 import Meetings from "./components/Meetings";
 import TranscriptDrawer from "./components/TranscriptDrawer";
+import { Toasts } from "./components/ui";
 
 export default function App() {
   const { pushChunk, screen } = useStore();
@@ -33,8 +34,9 @@ export default function App() {
       <main className="grid min-h-0 flex-1 grid-cols-[minmax(240px,1fr)_minmax(0,2fr)_auto]">
         <div className="min-h-0 border-r border-ink-700"><ShorthandPad /></div>
         <div className="min-h-0"><NotesDashboard /></div>
-        <div className="min-h-0 w-80 border-l border-ink-700 [&:has(button[aria-label='Open_transcript'])]:w-auto"><TranscriptDrawer /></div>
+        <div className="min-h-0 w-80 border-l border-ink-700 xl:w-96 [&:has(button[aria-label='Open_transcript'])]:w-auto"><TranscriptDrawer /></div>
       </main></>}
+      <Toasts />
     </div>
   );
 }

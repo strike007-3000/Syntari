@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useStore } from "../store";
 import { Note, NoteKind, TranscriptChunk, fmtClock } from "../types";
+import { notify } from "./ui";
 
 const SECTIONS: { kind: NoteKind; title: string; dot: string }[] = [
   { kind: "decision", title: "Decisions", dot: "bg-emerald-400" },
@@ -20,11 +21,11 @@ function Item({ n }: { n: Note }) {
 
   if (n.status === "suggested") {
     return (
-      <li className="flex gap-2 rounded border border-amber-500/30 bg-amber-950/20 p-2">
-        <span className="flex-1 text-sm opacity-80">{body}</span>
-        <span className="text-xs text-amber-400/60 self-center mr-1">AI suggestion</span>
-        <button onClick={() => acceptSuggestion(n.id)} className="rounded px-2 py-0.5 text-xs bg-accent/20 text-accent hover:bg-accent/40">Accept</button>
-        <button onClick={() => dismissSuggestion(n.id)} className="rounded px-2 py-0.5 text-xs text-slate-400 hover:text-slate-200">Dismiss</button>
+      <li className="flex flex-wrap items-center gap-2 rounded border border-amber-500/30 bg-amber-950/20 p-2">
+        <span className="min-w-[12rem] flex-1 text-sm text-slate-200">{body}</span>
+        <span className="mr-1 text-xs text-amber-400">AI suggestion</span>
+        <button onClick={() => acceptSuggestion(n.id)} className="rounded px-2.5 py-1 text-xs bg-accent/20 text-accent hover:bg-accent/40">Accept</button>
+        <button onClick={() => dismissSuggestion(n.id)} className="rounded px-2.5 py-1 text-xs text-slate-400 hover:text-slate-200">Dismiss</button>
       </li>
     );
   }
@@ -43,7 +44,7 @@ function Item({ n }: { n: Note }) {
           defaultValue={body}
           onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== body) editNote(n.id, v); setEditing(false); }}
           onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setEditing(false); }}
-          className="flex-1 rounded border border-ink-700 bg-ink-900 px-2 py-0.5 text-sm"
+          className="flex-1 rounded border border-accent/60 bg-ink-900 px-2 py-0.5 text-sm outline-none"
         />
       ) : (
       <button
@@ -56,13 +57,13 @@ function Item({ n }: { n: Note }) {
           const nearest = transcript.reduce<TranscriptChunk | null>((b, c) => (!b || Math.abs(c.ts - t) < Math.abs(b.ts - t) ? c : b), null);
           inspect(nearest?.id ?? null);
         }}
-        title="Inspect in transcript"
+        title={n.citation?.start !== undefined ? "Show in transcript (double-click to edit)" : "Double-click to edit"}
       >
         <span className={n.done ? "line-through opacity-50" : ""}>{body}</span>
         {n.kind === "action" && (n.owner || n.due) && (
-          <span className="ml-2 text-xs text-accent">{n.owner} {n.due && `· ${n.due}`}</span>
+          <span className="ml-2 inline-flex gap-1 align-middle text-xs">{n.owner && <span className="rounded-full bg-accent/15 px-2 text-accent">{n.owner}</span>}{n.due && <span className="rounded-full bg-ink-700 px-2 text-slate-300">due {n.due}</span>}</span>
         )}
-        <span className="ml-2 font-mono text-xs text-slate-500">[{fmtClock(n.ts)}]</span>
+        <span className={`ml-2 font-mono text-xs ${n.citation?.start !== undefined ? "text-accent underline decoration-dotted underline-offset-2" : "text-slate-400"}`}>{fmtClock(n.ts)}{n.citation?.start !== undefined && " ↗"}</span>
         {n.status === "pending" && <span className="ml-2 text-xs text-amber-400/80 animate-pulse">expanding…</span>}
         {n.status === "failed" && <span className="ml-2 text-xs text-rose-400/80">(failed)</span>}
       </button>
@@ -78,7 +79,7 @@ function Item({ n }: { n: Note }) {
       <button
         aria-label="Delete note"
         onClick={() => confirm("Delete this note?") && deleteNote(n.id)}
-        className="self-start rounded px-1 text-xs text-rose-400 opacity-0 focus:opacity-100 group-hover:opacity-100"
+        className="flex h-6 w-6 shrink-0 items-center justify-center self-start rounded text-xs text-rose-400 opacity-0 hover:bg-rose-500/10 focus:opacity-100 group-hover:opacity-100"
       >✕</button>
       {n.citation?.quote && (
         <div className={`pointer-events-none absolute left-6 ${flipUp ? "bottom-full" : "top-full"} z-10 hidden w-96 rounded border border-ink-700 bg-ink-950 p-2 text-xs italic shadow-lg group-hover:block`}>
@@ -124,31 +125,37 @@ export default function NotesDashboard() {
   const status = useSummarizeStatus(summarizing);
   return (
     <section className="flex h-full flex-col" aria-label="Notes view">
-      <nav className="flex gap-1 border-b border-ink-700 p-2 text-sm">
+      <nav className="flex h-11 shrink-0 items-center gap-1 border-b border-ink-700 px-2 text-sm">
         {(["notes", "summary", "markdown"] as const).map((v) => (
           <button key={v} onClick={() => setView(v)} className={`rounded-md px-3 py-1 transition-colors ${view === v ? "bg-ink-700 text-white font-medium" : "text-slate-400 hover:text-slate-200"}`}>
-            {v === "markdown" ? "Markdown" : v === "summary" ? "Summary" : "Notes"}
+            {v === "markdown" ? "Preview" : v === "summary" ? "Summary" : "Notes"}
           </button>
         ))}
       </nav>
       <div className="flex-1 overflow-y-auto p-3">
-        {view === "notes" &&
+        {view === "notes" && notes.length === 0 && (
+          <div className="mx-auto mt-16 max-w-sm text-center text-sm text-slate-400">
+            <p className="mb-1 font-medium text-slate-200">No notes yet</p>
+            Jot a note on the left or start transcribing. Decisions, action items, risks and discussion points are filed here as they come up.
+          </div>
+        )}
+        {view === "notes" && notes.length > 0 &&
           SECTIONS.map(({ kind, title, dot }) => {
             const items = notes.filter((n) => n.kind === kind);
             return (
-              <div key={kind} className="mb-3 rounded-lg border border-ink-700 bg-ink-900 p-3">
-                <h2 className="mb-1 flex items-center gap-2 text-sm font-semibold text-slate-100">
+              <div key={kind} className={`mb-3 rounded-lg border border-ink-700 bg-ink-900 ${items.length ? "p-3" : "px-3 py-2"}`}>
+                <h2 className={`flex items-center gap-2 text-sm font-semibold ${items.length ? "mb-1 text-slate-100" : "text-slate-400"}`}>
                   <span className={`h-2 w-2 rounded-full ${dot}`} />{title}
                   {items.length > 0 && <span className="rounded-full bg-ink-700 px-1.5 text-xs font-normal text-slate-400">{items.length}</span>}
                 </h2>
-                {items.length ? <ul>{items.map((n) => <Item key={n.id} n={n} />)}</ul> : <p className="text-xs text-slate-500">Nothing captured yet. Jot a note or start transcribing.</p>}
+                {items.length ? <ul>{items.map((n) => <Item key={n.id} n={n} />)}</ul> : <span className="sr-only">None yet</span>}
               </div>
             );
           })}
         {view === "summary" && (
           <div className="space-y-3 text-sm">
             <button
-              onClick={() => summarize().catch((e) => alert(String(e)))}
+              onClick={() => summarize().catch(notify)}
               disabled={running || summarizing || !transcript.some((c) => !c.excluded)}
               title={running ? "Stop the session first" : undefined}
               className="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-ink-950 disabled:opacity-50"
@@ -156,19 +163,19 @@ export default function NotesDashboard() {
               {summarizing ? `Summarizing… (${status})` : summary ? "Regenerate summary" : "Generate summary"}
             </button>
             {summary ? (
-              <article className="space-y-2 [&_h3]:mt-3 [&_h3]:font-semibold [&_ul]:list-disc [&_ul]:pl-5">
+              <article className="space-y-2 [&_h2]:mb-1 [&_h2]:mt-4 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:text-slate-100 [&_h3]:mb-1 [&_h3]:mt-3 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-slate-100 [&_ul]:list-disc [&_ul]:pl-5 [&_.contains-task-list]:list-none [&_.contains-task-list]:pl-0 [&_input]:mr-2 [&_em]:text-slate-400">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{summary}</ReactMarkdown>
               </article>
             ) : (
-              <p className="text-xs text-slate-500">Stop the session, then generate a full summary of the transcript.</p>
+              <p className="text-sm text-slate-400">{running ? "Stop the session, then generate a full summary of the transcript." : transcript.some((c) => !c.excluded) ? "Generate a full summary of the transcript. It runs on this device." : "Nothing to summarize yet: the transcript is empty."}</p>
             )}
             {summaryStale && summary && !summarizing && <p className="text-xs text-amber-400">Excluded lines changed since this summary was written. Regenerate to update it.</p>}
-            {summarizing && <p className="text-xs text-slate-500">Running on your device; long meetings can take a few minutes.</p>}
-            {!running && transcript.some((c) => c.excluded) && <p className="text-xs text-slate-500">{transcript.filter((c) => c.excluded).length} transcript line(s) excluded from the summary.</p>}
+            {summarizing && <p className="text-xs text-slate-400">Running on your device; long meetings can take a few minutes.</p>}
+            {!running && transcript.some((c) => c.excluded) && <p className="text-xs text-slate-400">{transcript.filter((c) => c.excluded).length} transcript line(s) excluded from the summary.</p>}
           </div>
         )}
         {view === "markdown" && (
-          <article className="space-y-2 text-sm [&_h2]:mt-3 [&_h2]:font-semibold [&_ul]:list-disc [&_ul]:pl-5">
+          <article className="space-y-2 text-sm [&_h2]:mb-1 [&_h2]:mt-4 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:text-slate-100 [&_h3]:mb-1 [&_h3]:mt-3 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-slate-100 [&_ul]:list-disc [&_ul]:pl-5 [&_.contains-task-list]:list-none [&_.contains-task-list]:pl-0 [&_input]:mr-2 [&_em]:text-slate-400">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{toMarkdown(notes, summary, summaryStale)}</ReactMarkdown>
           </article>
         )}

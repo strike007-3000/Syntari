@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { MIC_KEY, RECORD_KEY, useStore } from "../store";
 import { AudioLevels } from "../types";
+import { btn as ui, notify } from "./ui";
 
 const QUIET = 0.003, WARN_AFTER_S = 300, STOP_AFTER_S = 360;
 
-const btn = "rounded-md border border-ink-700 bg-ink-800 px-2.5 py-1 text-xs text-slate-300 transition-colors hover:text-white disabled:opacity-50";
+const btn = ui.secondary;
 
 /** Opt-in crash-safe recording, and for a meeting that has saved audio: transcribe it again, or delete it. */
 export default function RecordingControls() {
@@ -35,6 +36,7 @@ export default function RecordingControls() {
           <button onClick={keep} className="ml-2 underline">Keep recording</button>
         </span>
       )}
+      {!running && (<>
       <select
         aria-label="Microphone"
         disabled={running}
@@ -50,9 +52,10 @@ export default function RecordingControls() {
         <input type="checkbox" checked={on} disabled={running} onChange={(e) => { localStorage.setItem(RECORD_KEY, e.target.checked ? "1" : "0"); setOn(e.target.checked); }} />
         Save audio
       </label>
+      </>)}
       {bytes > 0 && !running && (
         <>
-          <button className={btn} disabled={busy} onClick={() => { if (confirm("Replace this meeting's transcript with a fresh one from the saved audio?")) { setBusy(true); retranscribe().catch((e) => alert(`Re-transcribe failed: ${e}`)).finally(() => setBusy(false)); } }}>
+          <button className={btn} disabled={busy} onClick={() => { if (confirm("Replace this meeting's transcript with a fresh one from the saved audio?")) { setBusy(true); retranscribe().catch((e) => notify(`Re-transcribe failed: ${e}`)).finally(() => setBusy(false)); } }}>
             {busy ? "Transcribing…" : `Re-transcribe (${(bytes / 1e6).toFixed(0)} MB)`}
           </button>
           <button className={btn} disabled={busy} onClick={() => confirm("Delete the saved audio for this meeting? The transcript stays.") && invoke("delete_recording", { sessionId }).then(() => setBytes(0))}>Delete audio</button>
