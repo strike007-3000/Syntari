@@ -2,5 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
+html { color-scheme: dark; } /* native scrollbars, selects and date pickers match the dark UI */
 html, body, #root { height: 100%; margin: 0; }
 body { @apply text-slate-200 font-sans antialiased; }
+input[type="checkbox"] { accent-color: #7c9cff; }
