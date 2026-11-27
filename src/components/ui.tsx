@@ -34,34 +34,62 @@ export function Toasts() {
   );
 }
 
-/** Small "⋯" dropdown: closes on item click, outside click or Escape. */
+/** Small "⋯" dropdown following the WAI-ARIA menu button pattern: focus moves into the menu on open,
+ *  arrow keys / Home / End move between items, Escape or Tab closes it, and focus returns to the trigger. */
 export function Menu({ label, items, disabled }: { label: string; disabled?: boolean; items: { label: string; onClick: () => void; danger?: boolean; title?: string; disabled?: boolean }[] }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const enabled = () => [...(menu.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? [])];
+  const close = (refocus: boolean) => { setOpen(false); if (refocus) trigger.current?.focus(); };
+
   useEffect(() => {
     if (!open) return;
-    const close = (e: MouseEvent | KeyboardEvent) => {
-      if (e instanceof KeyboardEvent ? e.key === "Escape" : !ref.current?.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    document.addEventListener("keydown", close);
-    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", close); };
+    enabled()[0]?.focus();
+    const outside = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", outside);
+    return () => document.removeEventListener("mousedown", outside);
   }, [open]);
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const list = enabled();
+    const i = list.indexOf(document.activeElement as HTMLButtonElement);
+    const move = (n: number) => { e.preventDefault(); list[(n + list.length) % list.length]?.focus(); };
+    if (e.key === "ArrowDown") move(i + 1);
+    else if (e.key === "ArrowUp") move(i - 1);
+    else if (e.key === "Home") move(0);
+    else if (e.key === "End") move(list.length - 1);
+    else if (e.key === "Escape") { e.preventDefault(); close(true); }
+    else if (e.key === "Tab") close(false); // let Tab carry on to the next control
+  };
+
   return (
     <div ref={ref} className="relative">
-      <button aria-label={label} title={label} aria-haspopup="menu" aria-expanded={open} disabled={disabled} onClick={() => setOpen((o) => !o)} className={`${btn.secondary} h-7 w-8 justify-center px-0`}>
+      <button
+        ref={trigger}
+        aria-label={label}
+        title={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={disabled}
+        onClick={() => setOpen((o) => !o)}
+        onKeyDown={(e) => { if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); setOpen(true); } }}
+        className={`${btn.secondary} h-7 w-8 justify-center px-0`}
+      >
         <MoreHorizontal size={16} />
       </button>
       {open && (
-        <div role="menu" className="absolute right-0 top-full z-40 mt-1 min-w-[12rem] rounded-lg border border-ink-700 bg-ink-800 py-1 shadow-xl">
+        <div ref={menu} role="menu" aria-label={label} onKeyDown={onKeyDown} className="absolute right-0 top-full z-40 mt-1 min-w-[12rem] rounded-lg border border-ink-700 bg-ink-800 py-1 shadow-xl">
           {items.map((it) => (
             <button
               key={it.label}
               role="menuitem"
+              tabIndex={-1}
               title={it.title}
               disabled={it.disabled}
-              onClick={() => { setOpen(false); it.onClick(); }}
-              className={`block w-full px-3 py-1.5 text-left text-sm hover:bg-ink-700 disabled:opacity-50 ${it.danger ? "text-rose-400" : "text-slate-200"}`}
+              onClick={() => { close(true); it.onClick(); }}
+              className={`block w-full px-3 py-1.5 text-left text-sm hover:bg-ink-700 focus:bg-ink-700 disabled:opacity-50 ${it.danger ? "text-rose-400" : "text-slate-200"}`}
             >{it.label}</button>
           ))}
         </div>
