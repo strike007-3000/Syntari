@@ -30,7 +30,7 @@ export default function ShorthandPad() {
         Shorthand Scratchpad
       </div>
 
-      <div className="flex-1 space-y-2 overflow-y-auto p-3 font-mono text-xs">
+      <div className="flex-1 space-y-2 overflow-y-auto p-3 text-sm">
         {notes.length === 0 ? (
           <p className="p-2 font-sans text-slate-400">Your notes appear here. Shorthand is fine: each one is expanded and filed into the right section.</p>
         ) : (
@@ -40,16 +40,16 @@ export default function ShorthandPad() {
             return (
               <div key={n.id} className="flex items-start justify-between gap-2 rounded bg-ink-900/60 p-2">
                 <div className="flex-1 break-words">
-                  <span className="text-slate-400">[{fmtClock(n.ts)}]</span>{" "}
+                  <span className="mr-1.5 font-mono text-xs text-slate-400">{fmtClock(n.ts)}</span>
                   <span className="text-slate-200">{n.raw}</span>
                   {n.expanded && n.expanded !== n.raw && (
-                    <div className="mt-1 text-[11px] text-slate-300 italic">
+                    <div className="mt-1 text-xs italic text-slate-300">
                       ↳ {n.expanded}
                     </div>
                   )}
                 </div>
                 <span
-                  className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium border ${
+                  className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium border ${
                     isCompleted
                       ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
                       : isFailed
@@ -70,7 +70,7 @@ export default function ShorthandPad() {
         <div ref={listEndRef} />
       </div>
 
-      <div className="border-t border-ink-700 bg-ink-900 p-2">
+      <div className="border-t border-ink-700 bg-ink-900 p-2 focus-within:border-accent/60">
         <textarea
           id="shorthand-input"
           autoFocus
@@ -84,14 +84,15 @@ export default function ShorthandPad() {
               handleSubmit();
             }
           }}
-          className="w-full resize-none bg-transparent p-2 font-mono text-xs text-gray-200 placeholder-slate-400 focus:outline-none"
+          aria-label="New note"
+          className="w-full resize-none bg-transparent p-2 text-sm text-slate-200 placeholder-slate-400 outline-none"
         />
         {!running && sorted.length > 0 && (
           <select
             aria-label="Moment this note refers to"
             value={momentTs}
             onChange={(e) => setMomentTs(e.target.value)}
-            className="mx-2 mb-1 w-[calc(100%-1rem)] truncate rounded bg-ink-950 p-1 text-[10px] text-slate-400"
+            className="mx-2 mb-1 w-[calc(100%-1rem)] truncate rounded border border-ink-700 bg-ink-950 px-1.5 py-1 text-xs text-slate-300"
           >
             <option value="">Refers to: end of transcript</option>
             {sorted.map((c) => (
@@ -99,7 +100,7 @@ export default function ShorthandPad() {
             ))}
           </select>
         )}
-        <div className="flex justify-between px-2 pb-1 text-[10px] text-slate-400">
+        <div className="flex justify-between px-2 pb-1 text-[11px] text-slate-400">
           <span>Enter to add</span>
           <span>Shift+Enter for newline</span>
         </div>

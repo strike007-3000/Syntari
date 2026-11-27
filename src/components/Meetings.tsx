@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Plus } from "lucide-react";
 import AskMeetings from "./AskMeetings";
 import { useStore, MeetingRow } from "../store";
 import { Menu, btn, notify } from "./ui";
@@ -37,32 +38,31 @@ export default function Meetings() {
   const open = (id: number) => loadSession(id).catch(notify);
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto p-8">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Meetings</h1>
-        {modelMsg && <span className="rounded-full border border-amber-500/30 bg-amber-500/15 px-2.5 py-0.5 text-xs text-amber-400">{modelMsg}</span>}
-        <button onClick={() => afterSave(newMeeting)} disabled={running} className={btn.primary}>New meeting</button>
-      </div>
-      <AskMeetings />
-      {totalMb > 0 && (
-        <div className="mb-3 flex items-center gap-3 text-xs text-slate-400">
-          Saved audio: {totalMb.toFixed(0)} MB
-          <button
-            className={btn.secondary}
-            onClick={() => confirm("Delete saved audio not written to for 30 days? Transcripts and notes stay.") && invoke<number>("delete_old_recordings", { days: 30 }).then((b) => { notify(`Freed ${(b / 1e6).toFixed(0)} MB`); refresh(); }).catch(notify)}
-          >Delete audio older than 30 days</button>
-        </div>
+    <div className="flex h-full flex-col overflow-y-auto">
+      {modelMsg && (
+        <div className="border-b border-amber-500/30 bg-amber-500/10 px-8 py-1.5 text-xs font-medium text-amber-400" title="One-time download of the on-device models; recording unlocks when it finishes">{modelMsg}</div>
       )}
-      <input
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-        placeholder="Search summaries, notes and transcripts"
-        className="mb-6 w-full rounded-lg border border-ink-700 bg-ink-900 px-4 py-2 text-sm placeholder-slate-400 focus:outline-none"
-      />
-      {rows.length === 0 && <p className="text-sm text-slate-400">{q ? "No meetings match." : "No meetings yet. Start a new one."}</p>}
+      <div className="mx-auto w-full max-w-4xl flex-1 px-8 py-8">
+      <div className="mb-6 flex items-end justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold">Meetings</h1>
+          <p className="mt-0.5 text-sm text-slate-400">Everything stays on this device.</p>
+        </div>
+        <button onClick={() => afterSave(newMeeting)} disabled={running} className={btn.primary}><Plus size={14} /> New meeting</button>
+      </div>
+      <AskMeetings onSearch={setQ} />
+      {rows.length === 0 && (q ? (
+        <p className="py-8 text-center text-sm text-slate-400">No meetings match “{q}”.</p>
+      ) : (
+        <div className="rounded-xl border border-dashed border-ink-700 py-12 text-center">
+          <p className="font-medium text-slate-200">No meetings yet</p>
+          <p className="mb-4 mt-1 text-sm text-slate-400">Start one and Syntari transcribes it and files your notes as you go.</p>
+          <button onClick={() => afterSave(newMeeting)} disabled={running} className={btn.primary}><Plus size={14} /> New meeting</button>
+        </div>
+      ))}
       {Object.entries(groups).map(([day, items]) => (
         <section key={day} className="mb-6">
-          <h2 className="mb-2 text-sm font-semibold text-slate-300">{day}</h2>
+          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">{day}</h2>
           <ul className="space-y-2">
             {items.map((r) => (
               <li key={r.id} className="flex items-center gap-4 rounded-lg border border-ink-700 bg-ink-900 p-3 transition-colors hover:border-slate-600 hover:bg-ink-800">
@@ -79,13 +79,15 @@ export default function Meetings() {
                         .catch((err) => { notify(`Rename failed: ${err}`); el.focus(); return false; });
                     }}
                     onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setRenaming(null); }}
-                    className="min-w-0 flex-1 rounded border border-ink-700 bg-ink-950 px-2 py-0.5 text-sm"
+                    aria-describedby={`rename-hint-${r.id}`}
+                    className="min-w-0 flex-1 rounded border border-accent/60 bg-ink-950 px-2 py-1 text-sm outline-none"
                   />
                 ) : (
                   <button onClick={() => afterSave(() => open(r.id))} className="min-w-0 flex-1 self-stretch text-left" title="Open meeting">
                     <span className={`line-clamp-2 text-sm ${r.title || r.summary || r.first_note ? "" : "italic text-slate-400"}`}>{r.title || r.summary?.replace(/[#*\-]/g, " ").replace(/\s+/g, " ").trim() || r.first_note || "Untitled meeting"}</span>
                   </button>
                 )}
+                {renaming === r.id && <span id={`rename-hint-${r.id}`} className="text-xs text-slate-400">Enter to save · Esc to cancel</span>}
                 {interrupted(r) && (
                   <button
                     disabled={running}
@@ -113,6 +115,16 @@ export default function Meetings() {
           </ul>
         </section>
       ))}
+      {totalMb > 0 && (
+        <footer className="mt-4 flex items-center justify-between gap-3 border-t border-ink-700 pt-4 text-xs text-slate-400">
+          <span>Saved audio uses {totalMb.toFixed(0)} MB on this device.</span>
+          <button
+            className={btn.secondary}
+            onClick={() => confirm("Delete saved audio not written to for 30 days? Transcripts and notes stay.") && invoke<number>("delete_old_recordings", { days: 30 }).then((b) => { notify(`Freed ${(b / 1e6).toFixed(0)} MB`); refresh(); }).catch(notify)}
+          >Delete audio older than 30 days</button>
+        </footer>
+      )}
+      </div>
     </div>
   );
 }

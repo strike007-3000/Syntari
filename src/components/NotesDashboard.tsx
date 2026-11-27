@@ -44,7 +44,7 @@ function Item({ n }: { n: Note }) {
           defaultValue={body}
           onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== body) editNote(n.id, v); setEditing(false); }}
           onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setEditing(false); }}
-          className="flex-1 rounded border border-ink-700 bg-ink-900 px-2 py-0.5 text-sm"
+          className="flex-1 rounded border border-accent/60 bg-ink-900 px-2 py-0.5 text-sm outline-none"
         />
       ) : (
       <button
@@ -57,13 +57,13 @@ function Item({ n }: { n: Note }) {
           const nearest = transcript.reduce<TranscriptChunk | null>((b, c) => (!b || Math.abs(c.ts - t) < Math.abs(b.ts - t) ? c : b), null);
           inspect(nearest?.id ?? null);
         }}
-        title="Inspect in transcript"
+        title={n.citation?.start !== undefined ? "Show in transcript (double-click to edit)" : "Double-click to edit"}
       >
         <span className={n.done ? "line-through opacity-50" : ""}>{body}</span>
         {n.kind === "action" && (n.owner || n.due) && (
           <span className="ml-2 inline-flex gap-1 align-middle text-xs">{n.owner && <span className="rounded-full bg-accent/15 px-2 text-accent">{n.owner}</span>}{n.due && <span className="rounded-full bg-ink-700 px-2 text-slate-300">due {n.due}</span>}</span>
         )}
-        <span className="ml-2 font-mono text-xs text-slate-400">[{fmtClock(n.ts)}]</span>
+        <span className={`ml-2 font-mono text-xs ${n.citation?.start !== undefined ? "text-accent underline decoration-dotted underline-offset-2" : "text-slate-400"}`}>{fmtClock(n.ts)}{n.citation?.start !== undefined && " ↗"}</span>
         {n.status === "pending" && <span className="ml-2 text-xs text-amber-400/80 animate-pulse">expanding…</span>}
         {n.status === "failed" && <span className="ml-2 text-xs text-rose-400/80">(failed)</span>}
       </button>
@@ -167,7 +167,7 @@ export default function NotesDashboard() {
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{summary}</ReactMarkdown>
               </article>
             ) : (
-              <p className="text-xs text-slate-400">Stop the session, then generate a full summary of the transcript.</p>
+              <p className="text-sm text-slate-400">{running ? "Stop the session, then generate a full summary of the transcript." : transcript.some((c) => !c.excluded) ? "Generate a full summary of the transcript. It runs on this device." : "Nothing to summarize yet: the transcript is empty."}</p>
             )}
             {summaryStale && summary && !summarizing && <p className="text-xs text-amber-400">Excluded lines changed since this summary was written. Regenerate to update it.</p>}
             {summarizing && <p className="text-xs text-slate-400">Running on your device; long meetings can take a few minutes.</p>}

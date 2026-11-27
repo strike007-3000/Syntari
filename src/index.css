@@ -6,3 +6,4 @@ html { color-scheme: dark; } /* native scrollbars, selects and date pickers matc
 html, body, #root { height: 100%; margin: 0; }
 body { @apply text-slate-200 font-sans antialiased; }
 input[type="checkbox"] { accent-color: #7c9cff; }
+:where(:focus-visible) { outline: 2px solid #7c9cff; outline-offset: 2px; } /* keyboard users always see where they are */
